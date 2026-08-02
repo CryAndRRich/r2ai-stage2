@@ -1,0 +1,14 @@
+<question language="vi">
+{{QUESTION}}
+</question>
+
+<question_metadata>
+{{QUESTION_METADATA}}
+</question_metadata>
+
+<tables>
+The CSV content below is exactly what each DataFrame holds at execution time.
+{{TABLES}}
+</tables>
+
+Write the pandas code that computes the answer and assign the final numeric scalar to `result`.

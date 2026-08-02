@@ -1,0 +1,35 @@
+# Config baseline R2AI2026. Mọi key ở đây override default trong `r2ai/config.py` (deep-merge).
+
+extraction:
+  # `<vị trí>` trong table_ref = số dòng bắt đầu bảng trong file OCR (BTC xác nhận ở discussion).
+  # 1 = đếm dòng từ 1. Đổi thành 0 nếu bài nộp cho Tables F2 = 0 mà Docs F2 vẫn > 0.
+  table_ref_line_base: 1
+
+retrieval:
+  top_k: 20                 # số candidate ghi vào retrieval_results.jsonl
+  fetch_multiplier: 6       # over-fetch từ BM25 (top_k * multiplier) trước khi lọc metadata
+  fallback_quota: 2         # số hit không khớp metadata vẫn giữ lại (phao khi parse ticker/năm sai)
+  candidates_in_prompt: 4   # số bảng nhúng vào prompt LLM
+  submission_tables: 5      # số table_ref nộp ở relevant_tables (F2 beta=2 nghiêng về recall)
+  max_csv_chars: 6000       # cắt CSV nhúng (giới hạn context của model 7B)
+  year_expand: true         # "cuối năm N" cũng có thể nằm ở cột "số đầu năm" của report N+1
+  min_table_cells: 4        # bỏ bảng quá nhỏ khỏi index
+  require_numeric: true     # bảng phải có ≥1 ô số mới vào index
+
+generation:
+  # Luật thi: open-weight, ≤14B, phát hành trước 1/6/2026 (COMPETITION.md mục 1).
+  model: Qwen/Qwen2.5-Coder-7B-Instruct
+  fallback_model: Qwen/Qwen2.5-Coder-3B-Instruct   # dùng khi 7B không kịp giới hạn session Kaggle
+  load_in_4bit: true
+  max_new_tokens: 512
+  temperature: 0.0          # greedy — cần tái lập được kết quả
+  max_prompt_chars: 24000
+
+execution:
+  timeout_s: 20            # hạn cho phần code pandas thật sự chạy
+  startup_timeout_s: 120   # hạn riêng cho spawn process con + import pandas (cache nguội rất chậm)
+
+answer:
+  abs_tol: 0.01             # math.isclose(rel_tol=0.0, abs_tol=1e-2) theo công thức chấm
+  rel_tol: 0.0
+  fallback_answer: 0.0      # answer bắt buộc là float -> dùng khi query lỗi

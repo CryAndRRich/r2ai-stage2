@@ -1,0 +1,7 @@
+# Chỉ cài thêm trên Kaggle Notebook (T4 GPU). torch đã có sẵn trong image Kaggle -> KHÔNG pin/cài lại
+# để tránh phá vỡ tương thích CUDA của image.
+-r requirements.txt
+transformers==4.46.3
+accelerate==1.1.1
+bitsandbytes==0.44.1
+sentencepiece==0.2.0
