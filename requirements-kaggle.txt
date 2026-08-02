@@ -1,7 +1,21 @@
 # Chỉ cài thêm trên Kaggle Notebook (T4 GPU). torch đã có sẵn trong image Kaggle -> KHÔNG pin/cài lại
 # để tránh phá vỡ tương thích CUDA của image.
--r requirements.txt
-transformers==4.46.3
-accelerate==1.1.1
-bitsandbytes==0.44.1
-sentencepiece==0.2.0
+#
+# CỐ Ý KHÔNG `-r requirements.txt`: image Kaggle đã có sẵn pandas/numpy/lxml/pydantic/PyYAML
+# (thường mới hơn bản ghim để dev local dùng). Ép cài đúng bản ghim cũ từng khiến pip cố
+# resolve lại toàn bộ cây phụ thuộc quanh transformers/tokenizers, một bản cũ trong đó không có
+# wheel sẵn cho Python 3.12 của image Kaggle -> pip build từ source -> cần `maturin` (Rust) mà
+# image không có -> TOÀN BỘ lệnh `pip install -r requirements-kaggle.txt` crash, kể cả những dòng
+# phía sau nó (bitsandbytes) không được cài. Version pandas/numpy lệch một chút so với local không
+# sao — cell version-check + bước re-execute lại toàn bộ ở local (assemble_submission) đã xử lý
+# đúng việc này, số liệu exec_ok trên Kaggle chỉ là ước lượng sơ bộ, không phải nguồn sự thật.
+#
+# Chỉ ghim version tối thiểu (>=), KHÔNG ghim cứng exact version, để pip tự chọn bản có sẵn wheel
+# khớp Python/CUDA của image tại thời điểm chạy thay vì cứng nhắc theo 1 bản đã lỗi thời.
+lxml>=5.3
+pydantic>=2.9
+PyYAML>=6.0
+transformers>=4.46
+accelerate>=1.1
+bitsandbytes>=0.46.1
+sentencepiece>=0.2

@@ -98,10 +98,12 @@ class LocalLLM:
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        # `torch_dtype`, KHÔNG phải `dtype`: transformers 4.46.3 (bản ghim trong requirements-kaggle)
-        # dùng tên `torch_dtype`; tên `dtype` chỉ có ở bản mới hơn nhiều và sẽ bị nuốt thành config
-        # lạ -> model load fp32. Với 4-bit thì bnb che mất triệu chứng, nhưng tắt 4-bit là OOM T4.
-        kwargs: dict = {"torch_dtype": torch.float16, "device_map": "auto"}
+        # requirements-kaggle.txt chỉ ghim version tối thiểu (>=), không ghim version cứng, nên
+        # bản `transformers` thực tế cài được trên Kaggle thay đổi theo thời gian/theo image.
+        # Tên kwarg chọn dtype đã đổi 2 lần giữa các bản: `torch_dtype` (cũ) rồi `dtype` (mới hơn,
+        # `torch_dtype` bị deprecate). Không đoán cứng 1 tên — thử `dtype` trước (API hiện hành),
+        # nếu bản cài được là bản cũ chưa hỗ trợ thì rơi về `torch_dtype`.
+        kwargs: dict = {"device_map": "auto"}
         if load_in_4bit:
             from transformers import BitsAndBytesConfig  # type: ignore[import-not-found]
 
@@ -111,7 +113,10 @@ class LocalLLM:
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
             )
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+        try:
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, **kwargs)
+        except TypeError:
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, **kwargs)
         self.model.eval()
 
     def complete(self, system: str, user: str) -> str:
