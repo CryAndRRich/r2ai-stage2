@@ -86,28 +86,19 @@ def test_ast_precheck_allows_normal_pandas():
 
 
 def test_ast_precheck_allows_prompt_number_helper():
-    """Helper `to_num` mà system prompt yêu cầu LLM viết phải qua được pre-check."""
-    from pathlib import Path
-    import re as _re
+    """Helper `to_num` được `finalize_code()` ghép vào code phải qua được pre-check."""
+    from r2ai.execution.numeric import TO_NUM_HELPER_SOURCE
 
-    template = (Path(__file__).resolve().parents[1] / "r2ai/prompting/templates/system_pandas.txt").read_text(
-        encoding="utf-8"
-    )
-    snippet = _re.search(r"```python\n(.*?)```", template, _re.DOTALL).group(1)
-    ast_precheck(snippet + "\nresult = to_num('1.234')")
+    ast_precheck(TO_NUM_HELPER_SOURCE + "\nresult = to_num('1.234')")
 
 
 def test_prompt_number_helper_matches_numeric_module():
-    """Bug 1: công thức dạy LLM phải cho cùng kết quả với `numeric.parse_vn_number`."""
-    from pathlib import Path
-    import re as _re
+    """Bug 1: `TO_NUM_HELPER_SOURCE` (ghép vào pandas_query bởi `finalize_code`) phải cho cùng
+    kết quả với `numeric.parse_vn_number` — 2 bản không được lệch nhau."""
+    from r2ai.execution.numeric import TO_NUM_HELPER_SOURCE
 
-    template = (Path(__file__).resolve().parents[1] / "r2ai/prompting/templates/system_pandas.txt").read_text(
-        encoding="utf-8"
-    )
-    snippet = _re.search(r"```python\n(.*?)```", template, _re.DOTALL).group(1)
     namespace: dict = {}
-    exec(snippet, namespace)  # noqa: S102 - chạy chính đoạn code sẽ dạy cho LLM
+    exec(TO_NUM_HELPER_SOURCE, namespace)  # noqa: S102 - chạy chính đoạn sẽ ghép vào pandas_query
     to_num = namespace["to_num"]
     for raw in [
         "1.234.567",

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from r2ai.prompting.build_prompt import build_prompt, extract_code, used_variables, variable_name
+from r2ai.execution.numeric import TO_NUM_HELPER_SOURCE, parse_vn_number
+from r2ai.execution.sandbox import run_pandas_code
+from r2ai.prompting.build_prompt import build_prompt, extract_code, finalize_code, used_variables, variable_name
 from r2ai.schemas import RetrievalCandidate, RetrievalResult
 
 
@@ -107,6 +109,41 @@ def test_extract_code_keeps_multiline_code_with_helper():
 def test_extract_code_gives_up_gracefully_on_pure_prose():
     assert extract_code("Xin lỗi, tôi không thể trả lời.") == "Xin lỗi, tôi không thể trả lời."
     assert extract_code("") == ""
+
+
+def test_finalize_code_prepends_helper_and_stays_runnable(tmp_path):
+    """LLM không còn phải tự viết `to_num` (Bug 1 tối ưu tốc độ) — `finalize_code` ghép vào,
+    kết quả vẫn là code tự chứa chạy đúng qua sandbox thật."""
+    code = finalize_code("result = to_num(df1.iloc[0, 1])")
+    assert code.startswith("def to_num(s):")
+    assert code.rstrip().endswith("result = to_num(df1.iloc[0, 1])")
+
+    csv_file = tmp_path / "table.csv"
+    csv_file.write_text("Chỉ tiêu,Số cuối năm\nTiền,1.234.567\n", encoding="utf-8")
+    outcome = run_pandas_code(code, {"df1": csv_file}, timeout_s=10)
+    assert outcome.ok and outcome.value == 1234567.0
+
+
+def test_finalize_code_noop_on_empty():
+    assert finalize_code("") == ""
+    assert finalize_code("   ") == "   "
+
+
+def test_finalize_code_still_correct_if_llm_redefines_helper_anyway():
+    """Nếu LLM bỏ qua hướng dẫn mới và tự định nghĩa `to_num` riêng, định nghĩa của nó (đứng sau)
+    đè lên bản chuẩn — không hỏng, chỉ dư token."""
+    code = finalize_code("def to_num(s):\n    return 999.0\nresult = to_num('1.234')")
+    namespace: dict = {}
+    exec(code, namespace)  # noqa: S102
+    assert namespace["result"] == 999.0
+
+
+def test_to_num_helper_source_matches_parse_vn_number():
+    namespace: dict = {}
+    exec(TO_NUM_HELPER_SOURCE, namespace)  # noqa: S102
+    to_num = namespace["to_num"]
+    for raw in ["1.234.567", "12,5", "12,5%", "(1.234)", "1.234,56", "1,234,567", "", "Thuyết minh"]:
+        assert to_num(raw) == parse_vn_number(raw), raw
 
 
 def test_used_variables_detects_only_referenced():

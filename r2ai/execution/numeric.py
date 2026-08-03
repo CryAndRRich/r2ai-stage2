@@ -17,6 +17,39 @@ from r2ai.constants import ANSWER_ABS_TOL
 _NUMERIC_CHARS_RE = re.compile(r"[\d.,\-+()%\s]+")
 _DIGIT_RE = re.compile(r"\d")
 
+# Bản Python thuần, tương đương logic của `parse_vn_number` bên dưới — được `build_prompt.py`
+# ghép (nối chuỗi văn bản) vào TRƯỚC code do LLM sinh ra, KHÔNG phải inject vào namespace sandbox.
+# Nhờ vậy: (1) LLM không cần tốn ~400 token chép lại hàm này ở mỗi câu (tốc độ + giảm rủi ro bị cắt
+# cụt code khi hết `max_new_tokens`), và (2) `pandas_query` cuối cùng vẫn tự chứa 100% — vẫn chạy
+# lại được độc lập nếu BTC re-execute trong môi trường của họ, không phụ thuộc namespace của mình.
+# `test_prompt_number_helper_matches_numeric_module` (tests/test_sandbox.py) khoá 2 bản này khớp nhau.
+TO_NUM_HELPER_SOURCE = '''\
+def to_num(s):
+    s = str(s).strip()
+    if not s or not any(ch.isdigit() for ch in s):
+        return None
+    neg = s.startswith("(") and s.endswith(")")
+    s = s.strip("()").replace(" ", "").rstrip("%")
+    if s.startswith("+"):
+        s = s[1:]
+    if s.startswith("-"):
+        neg = not neg
+        s = s[1:]
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
+    elif "," in s:
+        parts = s.split(",")
+        s = "".join(parts) if len(parts) > 2 and all(len(p) == 3 for p in parts[1:]) else s.replace(",", ".")
+    elif "." in s:
+        parts = s.split(".")
+        if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3):
+            s = "".join(parts)
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return -v if neg else v'''
+
 
 def parse_vn_number(value: object) -> float | None:
     """'1.234.567' -> 1234567.0 ; '12,5' -> 12.5 ; '(1.234)' -> -1234.0 ; '' -> None.

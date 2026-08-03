@@ -26,7 +26,7 @@ from r2ai.constants import PREDICTIONS_PATH, RETRIEVAL_RESULTS_PATH
 from r2ai.execution.numeric import to_float
 from r2ai.execution.sandbox import run_pandas_code
 from r2ai.extraction.table_store import csv_filename
-from r2ai.prompting.build_prompt import build_prompt, extract_code, used_variables
+from r2ai.prompting.build_prompt import build_prompt, extract_code, finalize_code, used_variables
 from r2ai.schemas import EvidenceItem, Prediction, RetrievalResult
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,7 @@ def run(
             )
             if llm is not None:
                 completion = llm.complete(prompt.system, prompt.user)
-                code = extract_code(completion)
+                code = finalize_code(extract_code(completion))
             else:
                 # Không có model: chạy query giả để **đường thực thi thật vẫn được kiểm tra**
                 # (AST pre-check + load CSV + sandbox + ép kiểu kết quả). Nếu để code rỗng thì

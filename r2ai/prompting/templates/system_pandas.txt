@@ -11,37 +11,8 @@ You generate Python/pandas code that answers Vietnamese financial questions over
 </runtime_contract>
 
 <data_contract>
-- Vietnamese number format: "." is the thousands separator, "," is the decimal separator, "(1.234)" means negative 1234, "12,5%" means 12.5 percent. OCR sometimes produces the English format instead ("1,234,567" or "1,234,567.89"), so a naive `.replace(".", "").replace(",", ".")` is NOT safe — it turns "1,234,567" into "1.234.567" and `float()` raises ValueError.
-- ALWAYS start your code by defining this exact helper INSIDE the code you generate (the runtime provides no helper of its own; the code must stay self-contained and runnable anywhere):
-```python
-def to_num(s):
-    s = str(s).strip()
-    if not s or not any(ch.isdigit() for ch in s):
-        return None
-    neg = s.startswith("(") and s.endswith(")")
-    s = s.strip("()").replace(" ", "").rstrip("%")
-    if s.startswith("+"):
-        s = s[1:]
-    if s.startswith("-"):
-        neg = not neg
-        s = s[1:]
-    if "," in s and "." in s:
-        # the separator that appears last is the decimal one
-        s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
-    elif "," in s:
-        parts = s.split(",")
-        s = "".join(parts) if len(parts) > 2 and all(len(p) == 3 for p in parts[1:]) else s.replace(",", ".")
-    elif "." in s:
-        parts = s.split(".")
-        if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) == 3):
-            s = "".join(parts)
-    try:
-        v = float(s)
-    except ValueError:
-        return None
-    return -v if neg else v
-```
-- Use `to_num(...)` for every cell you convert, and skip cells where it returns `None` (empty cells, row labels, note references).
+- A function `to_num(s)` is ALREADY DEFINED in the runtime — do NOT redefine it, just call it. It parses a raw cell string into a float using the Vietnamese convention ("." is the thousands separator, "," is the decimal separator, "(1.234)" means negative 1234, "12,5%" means 12.5, and it also correctly handles the English-style OCR variant "1,234,567"), and returns `None` for anything that isn't a number (empty cells, row labels, note references).
+- Use `to_num(...)` for every cell you convert, and skip cells where it returns `None`.
 - Determine each table's unit from the metadata/context line shown above it (e.g. "Đơn vị: VND", "triệu đồng", "tỷ đồng"), then convert the final value to the unit the question asks for.
 - Balance-sheet tables usually have a "Số cuối năm" (end of year) column and a "Số đầu năm" (start of year) column. "cuối năm N" is the end-of-year column of report year N; "đầu năm N" equals end-of-year N-1.
 - OCR text may contain diacritic errors. Match row labels loosely (e.g. `.str.contains(..., case=False, na=False)`) instead of requiring exact equality.

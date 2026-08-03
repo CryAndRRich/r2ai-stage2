@@ -14,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from r2ai.constants import TEMPLATES_DIR
+from r2ai.execution.numeric import TO_NUM_HELPER_SOURCE
 from r2ai.schemas import RetrievalCandidate, RetrievalResult
 
 SYSTEM_TEMPLATE = "system_pandas.txt"
@@ -185,6 +186,18 @@ def extract_code(completion: str) -> str:
             continue
         lines.append(line)
     return _trim_to_parsable("\n".join(lines).strip())
+
+
+def finalize_code(code: str) -> str:
+    """Ghép hàm `to_num()` chuẩn vào TRƯỚC code LLM sinh ra (nối chuỗi văn bản, không phải inject
+    vào namespace sandbox) — để `pandas_query` cuối cùng vẫn tự chứa 100% mà LLM không phải tốn
+    ~400 token chép lại nguyên hàm ở mỗi câu (system_pandas.txt chỉ mô tả hành vi, không bắt viết).
+    Nếu LLM vẫn lỡ tự định nghĩa `to_num` riêng (bỏ qua hướng dẫn mới) thì không sao — hàm của nó
+    định nghĩa sau sẽ đè lên, code vẫn chạy đúng, chỉ tốn dư token chứ không hỏng.
+    """
+    if not code.strip():
+        return code
+    return f"{TO_NUM_HELPER_SOURCE}\n\n{code}"
 
 
 def used_variables(code: str, variables: dict[str, str]) -> list[str]:
