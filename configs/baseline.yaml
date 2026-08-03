@@ -25,7 +25,12 @@ generation:
   load_in_4bit: true
   max_new_tokens: 512
   temperature: 0.0          # greedy — cần tái lập được kết quả
-  max_prompt_chars: 24000
+  # Hạ từ 24000: pilot 20 câu trên T4 OOM ở 4 câu, 3/4 câu đó có prompt 6 bảng > 16k ký tự
+  # (16241 / 18737 / 18066). Retry cứu được hết nhưng tốn 1 lần prefill thừa (~20% số câu) và
+  # tụt xuống 3 bảng. Cắt trước ở 16000 thì `build_prompt` bỏ bớt bảng cuối một cách nhẹ nhàng
+  # hơn (đo trên 1.012 câu: 190 câu bị cắt, trung bình còn 5,68 bảng thay vì 3, median prompt
+  # gần như không đổi 12899 -> 12889). Retry vẫn giữ làm phao cho phần OOM còn sót.
+  max_prompt_chars: 16000
 
 execution:
   timeout_s: 20            # hạn cho phần code pandas thật sự chạy
