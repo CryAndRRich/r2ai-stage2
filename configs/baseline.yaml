@@ -9,7 +9,9 @@ retrieval:
   top_k: 20                 # số candidate ghi vào retrieval_results.jsonl
   fetch_multiplier: 6       # over-fetch từ BM25 (top_k * multiplier) trước khi lọc metadata
   fallback_quota: 2         # số hit không khớp metadata vẫn giữ lại (phao khi parse ticker/năm sai)
-  candidates_in_prompt: 4   # số bảng nhúng vào prompt LLM
+  candidates_in_prompt: 6   # số bảng nhúng vào prompt LLM. Tăng từ 4: câu id=3 pilot thật cho thấy
+                            # bảng đúng nằm ở rank 5/20, ngay ngoài ngân sách top-4 cũ — model không
+                            # bao giờ thấy được. `max_prompt_chars` vẫn tự cắt giảm nếu prompt quá dài.
   submission_tables: 5      # số table_ref nộp ở relevant_tables (F2 beta=2 nghiêng về recall)
   max_csv_chars: 6000       # cắt CSV nhúng (giới hạn context của model 7B)
   year_expand: true         # "cuối năm N" cũng có thể nằm ở cột "số đầu năm" của report N+1
