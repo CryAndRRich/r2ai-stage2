@@ -1,10 +1,22 @@
-# Deps cho pipeline chạy local (CPU-only). Pin version để khớp với môi trường Kaggle
-# (ARCHITECTURE.md mục 2: re-execute pandas_query ở local phải cùng version pandas/numpy).
-lxml==5.3.0
-pandas==2.2.3
-numpy==2.1.3
-bm25s==0.2.6
-underthesea==6.8.4
-pydantic==2.9.2
-PyYAML==6.0.2
-pytest==8.3.3
+# Deps cho pipeline r2ai — extraction/retrieval/packaging (CPU) + sinh pandas_query bằng LLM
+# (transformers/accelerate/bitsandbytes/sentencepiece, dùng trên Kaggle Notebook GPU T4).
+#
+# Không ghim cứng exact version (>= thay vì ==) — để pip giữ nguyên bản đã có sẵn trong môi trường
+# (Kaggle hay local) nếu nó đã thoả điều kiện tối thiểu, không ép khớp 1 bản cụ thể. Đáp án nộp
+# cuối luôn được re-execute lại ở local trước khi đóng gói (`assemble_submission`), nên lệch version
+# pandas/numpy giữa các môi trường không ảnh hưởng kết quả.
+#
+# `torch` KHÔNG có trong danh sách: Kaggle đã có sẵn bản khớp CUDA của image, cài lại/ghim version
+# dễ phá tương thích GPU.
+lxml>=5.3
+pandas>=2.2
+numpy>=1.26
+pydantic>=2.9
+PyYAML>=6.0
+pytest>=8.3
+bm25s>=0.2.6
+underthesea>=6.8.4
+transformers>=4.46
+accelerate>=1.1
+bitsandbytes>=0.46.1
+sentencepiece>=0.2

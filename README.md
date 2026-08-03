@@ -15,8 +15,7 @@ submission.zip ◄── package + re-execute ◄── download ── predicti
 ## Cài đặt
 
 ```bash
-pip install -r requirements.txt          # local (CPU)
-pip install -r requirements-kaggle.txt   # trên Kaggle (thêm transformers/bitsandbytes)
+pip install -r requirements.txt   # 1 file duy nhất, dùng cho cả local (CPU) và Kaggle Notebook
 ```
 
 Mọi CLI chạy từ thư mục `code/`: `python -m r2ai.<module>`. Không cần `pip install -e .`.
@@ -65,7 +64,10 @@ Test: `pytest tests/` (chạy từ `code/`).
   (đổi xong phải chạy lại `build_table_index` + `run_retrieval`).
 - **`pandas_query` phải tự chứa**: sandbox chỉ cấp `pd` + builtins whitelist (kèm vài tên lớp exception),
   không inject helper parse số của mình — vì BTC có thể re-execute query trong môi trường của họ, nơi
-  helper đó không tồn tại. Thay vào đó system prompt yêu cầu LLM **tự định nghĩa `to_num()` trong code sinh ra**.
+  helper đó không tồn tại. Thay vì bắt LLM tự chép lại hàm `to_num()` mỗi câu (tốn ~250 token, dễ bị cắt
+  cụt khi hết `max_new_tokens`), `finalize_code()` (`build_prompt.py`) **tự ghép** `to_num()` (nối chuỗi
+  văn bản, `numeric.TO_NUM_HELPER_SOURCE`) vào trước code LLM sinh ra — `pandas_query` cuối cùng vẫn tự
+  chứa 100%, chỉ là LLM không cần tốn token viết lại nó.
 - **`relevant_tables` chỉ là id, không kèm file**: `data/*.csv` trong zip chỉ chứa bảng mà `evidence` tham chiếu
   (bảng thực sự dùng để tính `answer`), không phải toàn bộ bảng đã retrieve.
 - **Model**: Qwen2.5-Coder-7B-Instruct (open-weight, 11/2024, ≤14B — hợp lệ theo luật thi).
