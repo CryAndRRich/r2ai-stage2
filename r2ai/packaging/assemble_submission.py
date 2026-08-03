@@ -163,6 +163,9 @@ def assemble(
         "empty_query": 0,
         "duplicate_evidence_variables": 0,
         "kaggle_answer_not_verified": 0,
+        # Query chạy đúng với sandbox (dtype=str) nhưng ra kết quả khác/lỗi khi đọc CSV kiểu mặc
+        # định — rủi ro mất điểm Execution Accuracy nếu BTC re-execute bằng `pd.read_csv(path)`.
+        "fragile_to_default_reader": 0,
     }
     # Danh sách item chưa thật sự được "double-check" ở local — không nhét được vào submission.json
     # (schema BTC cố định) nên ghi ra file riêng để soi trước khi nộp.
@@ -213,7 +216,11 @@ def assemble(
         reexec_status = "skipped"
         if reexecute and query and csv_paths:
             execution = run_pandas_code(
-                query, dict(csv_paths), timeout_s=timeout_s, startup_timeout_s=startup_timeout_s
+                query,
+                dict(csv_paths),
+                timeout_s=timeout_s,
+                startup_timeout_s=startup_timeout_s,
+                cross_check_reader=True,
             )
             local_answer = to_float(execution.value) if execution.ok else None
             if local_answer is None:
@@ -226,6 +233,27 @@ def assemble(
             else:
                 reexec_status = "ok"
                 stats["reexecuted_ok"] += 1
+                alt = to_float(execution.alt_value) if execution.alt_error is None else None
+                if execution.alt_error is not None or alt is None or abs(alt - local_answer) > 1e-6:
+                    # BTC không cam kết đọc CSV bằng `dtype=str`; query phụ thuộc điều đó sẽ ra
+                    # kết quả khác trong môi trường của họ (vd so cột "Mã số" với chuỗi "110").
+                    stats["fragile_to_default_reader"] += 1
+                    logger.warning(
+                        "id=%d query phụ thuộc cách đọc CSV: dtype=str -> %r, mặc định -> %r (%s)",
+                        qid,
+                        local_answer,
+                        execution.alt_value,
+                        execution.alt_error or "khác giá trị",
+                    )
+                    reexec_report.append(
+                        {
+                            "id": qid,
+                            "status": "fragile_to_default_reader",
+                            "answer_dtype_str": local_answer,
+                            "answer_default_reader": execution.alt_value,
+                            "alt_error": execution.alt_error,
+                        }
+                    )
                 if answer is not None and abs(local_answer - answer) > 1e-6:
                     stats["answer_changed_vs_kaggle"] += 1
                     logger.warning(

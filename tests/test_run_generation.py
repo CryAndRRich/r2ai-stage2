@@ -97,6 +97,28 @@ def test_resume_skips_finished_ids(retrieval_file, tmp_path):
     assert {row["id"] for row in _rows(out)} == {1, 2}
 
 
+class _CrashingLLM:
+    """Giả lập OOM/lỗi generate thật gặp trên Kaggle — `.complete()` luôn raise."""
+
+    def complete(self, system: str, user: str) -> str:
+        raise RuntimeError("CUDA out of memory (simulated)")
+
+
+def test_llm_crash_does_not_kill_whole_run(retrieval_file, tmp_path):
+    """1 câu OOM/lỗi generate không được làm chết cả 1.012 câu — ghi nhận lỗi rồi qua câu sau."""
+    out = tmp_path / "predictions.jsonl"
+    stats = run(llm=_CrashingLLM(), retrieval_path=retrieval_file, out_path=out, work_dir=tmp_path / "exec")
+    assert stats["attempted"] == 2
+    assert stats["exec_ok"] == 0
+    assert stats["exec_failed"] == 2
+    rows = _rows(out)
+    assert len(rows) == 2  # cả 2 câu đều được ghi, không mất câu nào vì crash
+    assert all(not row["exec_ok"] for row in rows)
+    assert all("LLM generate lỗi" in (row["exec_error"] or "") for row in rows)
+    assert all("RuntimeError" in (row["exec_error"] or "") for row in rows)
+    assert all(row["pandas_query"] == "" for row in rows)
+
+
 def test_materialize_csvs_writes_expected_filenames(tmp_path):
     result = RetrievalResult(
         id=1,

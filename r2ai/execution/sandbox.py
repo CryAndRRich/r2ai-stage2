@@ -91,6 +91,11 @@ class ExecutionResult:
     value: object = None
     error: str | None = None
     stdout: str = ""
+    # Kết quả khi chạy LẠI cùng code nhưng đọc CSV theo kiểu mặc định `pd.read_csv(path)` —
+    # mô phỏng môi trường BTC re-execute (không ai đảm bảo họ dùng `dtype=str`). Chỉ được điền
+    # khi gọi với `cross_check_reader=True`; `None` nghĩa là không kiểm.
+    alt_value: object = None
+    alt_error: str | None = None
 
 
 def ast_precheck(code: str) -> None:
@@ -148,32 +153,33 @@ def read_raw_csv(path: str | Path):
     )
 
 
-def _run(code: str, csv_paths: dict[str, str], queue) -> None:  # pragma: no cover - chạy ở process con
-    """Thân process con: build namespace, exec, đẩy kết quả qua queue.
+def read_default_csv(path: str | Path):
+    """Đọc CSV theo mặc định `pd.read_csv(path)` — pandas TỰ suy kiểu, cột toàn số thành int/float.
 
-    Message đầu tiên luôn là `("ready",)` — gửi ngay sau khi `import pandas` xong, để process cha
-    bắt đầu bấm giờ timeout từ lúc code người dùng thật sự chạy, không tính thời gian khởi động
-    interpreter + import pandas (với `spawn` thì mỗi lần chạy đều phải import lại từ đầu, lúc cache
-    OS còn nguội có thể mất hàng chục giây và làm timeout báo nhầm).
+    Dùng để đối chiếu: BTC re-execute `pandas_query` trong môi trường của họ và không có gì đảm bảo
+    họ dùng `dtype=str` như sandbox này. Query kiểu `df[df["Mã số"] == "110"]` chạy đúng ở đây nhưng
+    filter rỗng ở kia (cột "Mã số" thành int64) -> mất điểm Execution Accuracy mà local không hề báo.
     """
+    import pandas as pd
+
+    return pd.read_csv(path, encoding="utf-8-sig", index_col=None)
+
+
+def _exec_once(code: str, frames: dict, pd_module):
+    """Chạy code trên 1 bộ DataFrame, trả về (ok, value|None, error|None, stdout)."""
     import contextlib
     import warnings
 
+    namespace: dict[str, object] = {
+        "pd": pd_module,
+        "dfs": frames,
+        "__builtins__": _safe_builtins(),
+        **frames,
+    }
+    if len(frames) == 1:
+        namespace.setdefault("df", next(iter(frames.values())))
+    buffer = io.StringIO()
     try:
-        import pandas as pd
-
-        queue.put(("ready",))
-        frames = {var: read_raw_csv(path) for var, path in csv_paths.items()}
-        namespace: dict[str, object] = {
-            "pd": pd,
-            "dfs": frames,
-            "__builtins__": _safe_builtins(),
-            **frames,
-        }
-        if len(frames) == 1:
-            namespace.setdefault("df", next(iter(frames.values())))
-
-        buffer = io.StringIO()
         # LLM đôi khi dùng API pandas đã deprecate (vd `DataFrame.applymap`) — vẫn chạy đúng, chỉ
         # in FutureWarning/DeprecationWarning gây nhiễu log. Nuốt riêng 2 loại này, KHÔNG nuốt
         # warning khác (vd `RuntimeWarning` chia 0/NaN có thể là dấu hiệu lỗi thật, cần thấy).
@@ -181,22 +187,54 @@ def _run(code: str, csv_paths: dict[str, str], queue) -> None:  # pragma: no cov
             warnings.simplefilter("ignore", category=FutureWarning)
             warnings.simplefilter("ignore", category=DeprecationWarning)
             exec(compile(code, "<pandas_query>", "exec"), namespace)  # noqa: S102
-        if "result" not in namespace:
-            queue.put(("done", False, None, "Code không gán biến `result`", buffer.getvalue()[:2000]))
-            return
-        value = namespace["result"]
-        item = getattr(value, "item", None)
-        if callable(item):  # numpy scalar -> python scalar
+    except BaseException as exc:  # noqa: BLE001 - lỗi của code sinh ra, không được thoát ra ngoài
+        return False, None, f"{type(exc).__name__}: {exc}", buffer.getvalue()[:2000]
+    if "result" not in namespace:
+        return False, None, "Code không gán biến `result`", buffer.getvalue()[:2000]
+    value = namespace["result"]
+    item = getattr(value, "item", None)
+    if callable(item):  # numpy scalar -> python scalar
+        try:
+            value = item()
+        except (ValueError, TypeError):
+            pass
+    if not isinstance(value, (int, float, str)):
+        # Không pickle DataFrame/Series qua queue (có thể rất lớn) — gửi repr để ghi log lỗi.
+        value = repr(value)[:500]
+    return True, value, None, buffer.getvalue()[:2000]
+
+
+def _run(code: str, csv_paths: dict[str, str], queue, cross_check_reader: bool = False) -> None:  # pragma: no cover - chạy ở process con
+    """Thân process con: build namespace, exec, đẩy kết quả qua queue.
+
+    Message đầu tiên luôn là `("ready",)` — gửi ngay sau khi `import pandas` xong, để process cha
+    bắt đầu bấm giờ timeout từ lúc code người dùng thật sự chạy, không tính thời gian khởi động
+    interpreter + import pandas (với `spawn` thì mỗi lần chạy đều phải import lại từ đầu, lúc cache
+    OS còn nguội có thể mất hàng chục giây và làm timeout báo nhầm).
+    """
+    try:
+        import pandas as pd
+
+        queue.put(("ready",))
+        frames = {var: read_raw_csv(path) for var, path in csv_paths.items()}
+        ok, value, error, stdout = _exec_once(code, frames, pd)
+
+        alt_value = alt_error = None
+        if cross_check_reader and ok:
+            # Cùng 1 process con -> không tốn thêm 1 lần spawn + import pandas (phần đắt nhất).
             try:
-                value = item()
-            except (ValueError, TypeError):
-                pass
-        if not isinstance(value, (int, float, str)):
-            # Không pickle DataFrame/Series qua queue (có thể rất lớn) — gửi repr để ghi log lỗi.
-            value = repr(value)[:500]
-        queue.put(("done", True, value, None, buffer.getvalue()[:2000]))
+                alt_frames = {var: read_default_csv(path) for var, path in csv_paths.items()}
+                alt_ok, alt_value, alt_error, _ = _exec_once(code, alt_frames, pd)
+                if not alt_ok and alt_error is None:
+                    alt_error = "không rõ"
+            except BaseException as exc:  # noqa: BLE001 - đối chiếu hỏng không được làm hỏng kết quả chính
+                alt_value, alt_error = None, f"{type(exc).__name__}: {exc}"
+
+        queue.put(("done", ok, value, error, stdout, alt_value, alt_error))
     except BaseException as exc:  # noqa: BLE001 - phải bắt hết để không treo process cha
-        queue.put(("done", False, None, f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=3)}", ""))
+        queue.put(
+            ("done", False, None, f"{type(exc).__name__}: {exc}\n{traceback.format_exc(limit=3)}", "", None, None)
+        )
 
 
 def run_pandas_code(
@@ -205,6 +243,7 @@ def run_pandas_code(
     *,
     timeout_s: float = 20.0,
     startup_timeout_s: float = 120.0,
+    cross_check_reader: bool = False,
 ) -> ExecutionResult:
     """Chạy `code` với các DataFrame đã load từ `csv_paths` ({variable: đường dẫn CSV}).
 
@@ -227,7 +266,9 @@ def run_pandas_code(
     ctx = mp.get_context("spawn")
     queue: mp.Queue = ctx.Queue()
     process = ctx.Process(
-        target=_run, args=(code, {var: str(path) for var, path in csv_paths.items()}, queue), daemon=True
+        target=_run,
+        args=(code, {var: str(path) for var, path in csv_paths.items()}, queue, cross_check_reader),
+        daemon=True,
     )
     process.start()
     # Đọc queue TRƯỚC khi join: join trong lúc queue chưa được drain có thể deadlock.
@@ -238,9 +279,11 @@ def run_pandas_code(
         message = _receive(process, queue, timeout_s, phase="thực thi")
         if isinstance(message, ExecutionResult):
             return message
-    _, ok, value, error, stdout = message
+    _, ok, value, error, stdout, alt_value, alt_error = message
     _stop(process)
-    return ExecutionResult(ok=ok, value=value, error=error, stdout=stdout)
+    return ExecutionResult(
+        ok=ok, value=value, error=error, stdout=stdout, alt_value=alt_value, alt_error=alt_error
+    )
 
 
 def _receive(process, queue, timeout_s: float, *, phase: str) -> tuple | ExecutionResult:

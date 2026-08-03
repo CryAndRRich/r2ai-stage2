@@ -24,7 +24,7 @@ from pathlib import Path
 from r2ai.config import load_config
 from r2ai.constants import PREDICTIONS_PATH, RETRIEVAL_RESULTS_PATH
 from r2ai.execution.numeric import to_float
-from r2ai.execution.sandbox import run_pandas_code
+from r2ai.execution.sandbox import ExecutionResult, run_pandas_code
 from r2ai.extraction.table_store import csv_filename
 from r2ai.prompting.build_prompt import build_prompt, extract_code, finalize_code, used_variables
 from r2ai.schemas import EvidenceItem, Prediction, RetrievalResult
@@ -103,7 +103,12 @@ class LocalLLM:
         # Tên kwarg chọn dtype đã đổi 2 lần giữa các bản: `torch_dtype` (cũ) rồi `dtype` (mới hơn,
         # `torch_dtype` bị deprecate). Không đoán cứng 1 tên — thử `dtype` trước (API hiện hành),
         # nếu bản cài được là bản cũ chưa hỗ trợ thì rơi về `torch_dtype`.
-        kwargs: dict = {"device_map": "auto"}
+        # `device_map={"": 0}` (ép GPU 0 duy nhất), KHÔNG dùng `"auto"`: model 7B 4-bit chỉ ~4-5GB,
+        # dư sức nằm trên 1 T4 (16GB). `"auto"` trên session có ≥2 GPU (T4 x2) sẽ CHIA layer model
+        # ra nhiều GPU — activation/attention buffer lúc prefill KHÔNG được chia đều theo dung
+        # lượng còn trống của từng GPU, nên 1 GPU có thể OOM dù tổng dung lượng cả 2 GPU vẫn dư
+        # (đã gặp thật: "GPU 1 ... 10.97 GiB memory in use" trong khi GPU khác còn trống nhiều).
+        kwargs: dict = {"device_map": {"": 0}}
         if load_in_4bit:
             from transformers import BitsAndBytesConfig  # type: ignore[import-not-found]
 
@@ -194,9 +199,23 @@ def run(
                 max_csv_chars=int(retrieval_cfg["max_csv_chars"]),
                 max_prompt_chars=int(gen_cfg["max_prompt_chars"]),
             )
+            generation_error: str | None = None
             if llm is not None:
-                completion = llm.complete(prompt.system, prompt.user)
-                code = finalize_code(extract_code(completion))
+                try:
+                    completion = llm.complete(prompt.system, prompt.user)
+                    code = finalize_code(extract_code(completion))
+                except Exception as exc:  # noqa: BLE001 - OOM/lỗi generate khác không được làm chết
+                    # cả 1.012 câu; ghi nhận lỗi cho câu này, giải phóng cache GPU rồi qua câu sau.
+                    completion = ""
+                    code = ""
+                    generation_error = f"LLM generate lỗi: {type(exc).__name__}: {exc}"
+                    logger.warning("[%d/%d] id=%s generate lỗi: %s", i, len(pending), result.id, generation_error)
+                    try:
+                        import torch  # type: ignore[import-not-found]
+
+                        torch.cuda.empty_cache()
+                    except Exception:  # noqa: BLE001 - best-effort, không để dọn cache làm chết run
+                        pass
             else:
                 # Không có model: chạy query giả để **đường thực thi thật vẫn được kiểm tra**
                 # (AST pre-check + load CSV + sandbox + ép kiểu kết quả). Nếu để code rỗng thì
@@ -209,9 +228,12 @@ def run(
             } or prompt.variables
             csv_paths = materialize_csvs(result, variables, exec_dir)
 
-            execution = run_pandas_code(
-                code, dict(csv_paths), timeout_s=timeout_s, startup_timeout_s=startup_timeout_s
-            )
+            if generation_error is not None:
+                execution = ExecutionResult(ok=False, error=generation_error)
+            else:
+                execution = run_pandas_code(
+                    code, dict(csv_paths), timeout_s=timeout_s, startup_timeout_s=startup_timeout_s
+                )
             answer = to_float(execution.value) if execution.ok else None
             prediction = Prediction(
                 id=result.id,

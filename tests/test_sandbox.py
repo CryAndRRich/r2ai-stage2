@@ -128,6 +128,58 @@ def test_exception_names_available_in_sandbox(csv_file):
     assert outcome.ok and outcome.value == 1.0
 
 
+# --- Đối chiếu 2 cách đọc CSV (bảo vệ Execution Accuracy khi BTC re-execute) -------
+
+
+@pytest.fixture()
+def code_table(tmp_path):
+    """Bảng có cột "Mã số" toàn số — pandas mặc định sẽ suy thành int64, `dtype=str` thì không."""
+    path = tmp_path / "coded.csv"
+    path.write_text(
+        "Chỉ tiêu,Mã số,Số cuối năm\nTiền,110,1.234.567\nĐầu tư,120,2.000\n", encoding="utf-8"
+    )
+    return path
+
+
+def test_cross_check_flags_query_depending_on_dtype_str(code_table):
+    """`df["Mã số"] == "110"` chạy đúng với dtype=str nhưng filter rỗng khi pandas suy kiểu."""
+    code = "row = df1[df1['Mã số'] == '110']\nresult = float(len(row))"
+    outcome = run_pandas_code(code, {"df1": code_table}, timeout_s=60, cross_check_reader=True)
+    assert outcome.ok and outcome.value == 1.0  # với dtype=str: khớp 1 dòng
+    assert outcome.alt_value == 0.0  # với reader mặc định: không khớp dòng nào -> lệch, phải phát hiện được
+
+
+def test_cross_check_passes_for_astype_str_query(code_table):
+    """Cùng ý nghĩa nhưng viết bền (`.astype(str)`) thì 2 cách đọc CSV cho cùng kết quả."""
+    code = "row = df1[df1['Mã số'].astype(str).str.strip() == '110']\nresult = float(len(row))"
+    outcome = run_pandas_code(code, {"df1": code_table}, timeout_s=60, cross_check_reader=True)
+    assert outcome.ok and outcome.value == 1.0
+    assert outcome.alt_value == 1.0 and outcome.alt_error is None
+
+
+def test_cross_check_reports_error_from_alt_reader(code_table):
+    """Query dùng `.str` trên cột số: reader mặc định raise AttributeError -> phải ghi lại alt_error."""
+    code = "result = float(len(df1[df1['Mã số'].str.contains('110', na=False)]))"
+    outcome = run_pandas_code(code, {"df1": code_table}, timeout_s=60, cross_check_reader=True)
+    assert outcome.ok and outcome.value == 1.0
+    assert outcome.alt_error is not None and "AttributeError" in outcome.alt_error
+
+
+def test_cross_check_off_by_default(code_table):
+    outcome = run_pandas_code("result = float(len(df1))", {"df1": code_table}, timeout_s=60)
+    assert outcome.ok and outcome.alt_value is None and outcome.alt_error is None
+
+
+def test_to_num_helper_is_loader_agnostic(code_table):
+    """to_num phải cho cùng kết quả dù ô là str hay đã bị pandas suy thành số."""
+    from r2ai.prompting.build_prompt import finalize_code
+
+    code = finalize_code("result = to_num(df1.iloc[1, 2])")  # "2.000" (str) vs 2000 (int64)
+    outcome = run_pandas_code(code, {"df1": code_table}, timeout_s=60, cross_check_reader=True)
+    assert outcome.ok and outcome.value == 2000.0
+    assert outcome.alt_value == 2000.0, outcome.alt_error
+
+
 def test_ast_precheck_reports_syntax_error():
     with pytest.raises(SandboxError, match="SyntaxError"):
         ast_precheck("result = (1 +")
