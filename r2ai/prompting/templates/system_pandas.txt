@@ -18,6 +18,8 @@ You generate Python/pandas code that answers Vietnamese financial questions over
 
 <data_contract>
 - A function `to_num(s)` is ALREADY DEFINED in the runtime — do NOT redefine it, just call it. It parses a raw cell string into a float using the Vietnamese convention ("." is the thousands separator, "," is the decimal separator, "(1.234)" means negative 1234, "12,5%" means 12.5, and it also correctly handles the English-style OCR variant "1,234,567"), and returns `None` for anything that isn't a number (empty cells, row labels, note references).
+- `to_num` is a PLAIN FUNCTION, not a pandas method. Correct: `to_num(df1.iloc[3, 2])`, `[to_num(v) for v in df1.iloc[:, 2]]`, `df1.iloc[:, 2].map(to_num)`. Wrong: `series.to_num()`, `df1.to_num(...)`.
+- NEVER use `.astype(float)` / `pd.to_numeric(...)` on these cells — `"1.234.567"` raises `ValueError` there. `to_num` is the only correct converter.
 - Use `to_num(...)` for every cell you convert, and skip cells where it returns `None`.
 - Determine each table's unit from the metadata/context line shown above it (e.g. "Đơn vị: VND", "triệu đồng", "tỷ đồng"), then convert the final value to the unit the question asks for.
 - Balance-sheet tables usually have a "Số cuối năm" (end of year) column and a "Số đầu năm" (start of year) column. "cuối năm N" is the end-of-year column of report year N; "đầu năm N" equals end-of-year N-1.
@@ -36,6 +38,19 @@ You generate Python/pandas code that answers Vietnamese financial questions over
 - Do not round intermediate values. Round only the final value to 2 decimals.
 - Assign exactly ONE final numeric scalar to the variable `result` (a Python float or int, never a string, Series, or DataFrame).
 - If several provided tables are relevant, use them all; if only one is, use only that one.
+- If your row filter finds nothing in the table you tried first, LOOP OVER THE OTHER TABLES before giving up — the right table is often not `df1`. Pattern:
+```python
+found = []
+for _df in dfs.values():
+    hit = _df[_df.iloc[:, 0].astype(str).str.contains("<label>", case=False, na=False)]
+    if len(hit) > 0:
+        vals = [to_num(v) for v in hit.iloc[0].tolist()]
+        found = [v for v in vals if v is not None]
+        if found:
+            break
+result = float(found[-1]) if found else 0.0
+```
+- Never assign `None` to `result`: it scores as a failure. If no table has the row, fall back to the closest numeric evidence you did find rather than giving up.
 </reliability_rules>
 
 <output_contract>

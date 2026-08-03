@@ -43,6 +43,34 @@ result = float(len(values))
 """
 
 
+def _retry_ladder(n_tables: int) -> list[int]:
+    """Số bảng cho từng lần thử: đủ ngân sách -> giảm dần -> tối thiểu 1 bảng."""
+    ladder = [n_tables, max(3, n_tables // 2), 2, 1]
+    out: list[int] = []
+    for n in ladder:
+        n = max(1, min(n, n_tables))
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Nhận diện OOM GPU không cần import torch (chạy được cả ở local không có CUDA)."""
+    if type(exc).__name__ in ("OutOfMemoryError", "CudaOutOfMemoryError"):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def _free_gpu_memory() -> None:
+    try:
+        import torch  # type: ignore[import-not-found]
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - best-effort, không để việc dọn cache làm chết cả run
+        pass
+
+
 def load_retrieval_results(path: Path) -> list[RetrievalResult]:
     if not path.exists():
         raise FileNotFoundError(f"Không tìm thấy {path} — chạy bước retrieval ở local trước.")
@@ -118,11 +146,38 @@ class LocalLLM:
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
             )
-        try:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, dtype=torch.float16, **kwargs)
-        except TypeError:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.float16, **kwargs)
+        # `attn_implementation="sdpa"` — KHÔNG để mặc định. Attention kiểu "eager" materialize hẳn
+        # ma trận (heads × seq × seq): với prompt ~6.000 token của pipeline này là 28 × 6000² × 2B
+        # ≈ 2GB, upcast fp32 lúc softmax thì ~4-5GB cho MỘT allocation — khớp đúng con số OOM thật
+        # đã gặp ("Tried to allocate 4.79 GiB" trong khi model 4-bit chỉ ~4,5GB). SDPA dùng kernel
+        # memory-efficient, không materialize ma trận đó; T4 (sm75) không chạy được flash-attn-2
+        # nhưng backend memory-efficient của SDPA thì hỗ trợ sm75.
+        self.attn_implementation = "default"
+        for attn in ("sdpa", None):
+            attn_kwargs = {"attn_implementation": attn} if attn else {}
+            try:
+                try:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_name, dtype=torch.float16, **attn_kwargs, **kwargs
+                    )
+                except TypeError:  # bản transformers cũ dùng tên `torch_dtype`
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_name, torch_dtype=torch.float16, **attn_kwargs, **kwargs
+                    )
+                self.attn_implementation = attn or "default"
+                break
+            except (ValueError, ImportError) as exc:  # bản/model không nhận sdpa -> để mặc định
+                logger.warning("attn_implementation=%s không dùng được (%s) — thử mặc định", attn, exc)
         self.model.eval()
+        logger.info("model nạp xong | attention = %s", self.attn_implementation)
+
+        # Qwen ship generation_config có top_p/top_k; ở chế độ greedy chúng vô nghĩa và transformers
+        # in cảnh báo "not valid and may be ignored" mỗi câu. Dọn cho log sạch.
+        if self.temperature <= 0.0:
+            for field in ("top_p", "top_k", "temperature"):
+                if hasattr(self.model.generation_config, field):
+                    setattr(self.model.generation_config, field, None)
+            self.model.generation_config.do_sample = False
 
     def complete(self, system: str, user: str) -> str:
         import torch  # type: ignore[import-not-found]
@@ -131,16 +186,26 @@ class LocalLLM:
         prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         greedy = self.temperature <= 0.0
-        with torch.no_grad():
-            output = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                do_sample=not greedy,
-                temperature=None if greedy else self.temperature,
-                pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-            )
-        generated = output[0][inputs["input_ids"].shape[-1] :]
-        return self.tokenizer.decode(generated, skip_special_tokens=True)
+        output = None
+        try:
+            with torch.inference_mode():
+                output = self.model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_new_tokens,
+                    do_sample=not greedy,
+                    temperature=None if greedy else self.temperature,
+                    pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                )
+            generated = output[0][inputs["input_ids"].shape[-1] :]
+            return self.tokenizer.decode(generated, skip_special_tokens=True)
+        finally:
+            # Giải phóng NGAY sau MỖI câu (kể cả câu thành công), không đợi tới lúc lỗi mới dọn:
+            # KV cache + tensor output của câu trước vẫn bị allocator giữ nên bộ nhớ tích tụ dần —
+            # đã thấy thật: câu đầu process dùng ~10,5GB, tới câu thứ 4 đã giữ 13,67GB rồi OOM khi
+            # chỉ cần thêm 932MB.
+            del inputs, output
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def run(
@@ -189,33 +254,63 @@ def run(
             temperature=float(gen_cfg["temperature"]),
         )
 
-    stats = {"total": len(results), "skipped_done": len(done), "attempted": 0, "exec_ok": 0, "exec_failed": 0}
+    stats = {
+        "total": len(results),
+        "skipped_done": len(done),
+        "attempted": 0,
+        "exec_ok": 0,
+        "exec_failed": 0,
+        "generate_oom": 0,  # số lần generate hết bộ nhớ GPU (có thể nhiều lần cho cùng 1 câu)
+        "generate_retried": 0,  # số lần phải dựng lại prompt ngắn hơn rồi generate lại
+    }
 
     with predictions_file.open("a", encoding="utf-8") as out:
         for i, result in enumerate(pending, start=1):
+            n_tables = int(retrieval_cfg["candidates_in_prompt"])
             prompt = build_prompt(
                 result,
-                max_tables=int(retrieval_cfg["candidates_in_prompt"]),
+                max_tables=n_tables,
                 max_csv_chars=int(retrieval_cfg["max_csv_chars"]),
                 max_prompt_chars=int(gen_cfg["max_prompt_chars"]),
             )
             generation_error: str | None = None
             if llm is not None:
-                try:
-                    completion = llm.complete(prompt.system, prompt.user)
-                    code = finalize_code(extract_code(completion))
-                except Exception as exc:  # noqa: BLE001 - OOM/lỗi generate khác không được làm chết
-                    # cả 1.012 câu; ghi nhận lỗi cho câu này, giải phóng cache GPU rồi qua câu sau.
-                    completion = ""
-                    code = ""
-                    generation_error = f"LLM generate lỗi: {type(exc).__name__}: {exc}"
-                    logger.warning("[%d/%d] id=%s generate lỗi: %s", i, len(pending), result.id, generation_error)
+                # OOM phụ thuộc ĐỘ DÀI PROMPT (bộ nhớ attention tăng theo seq), nên khi OOM thì thử
+                # lại với ít bảng hơn thay vì bỏ trắng câu: mất 1-2 bảng ít liên quan vẫn tốt hơn
+                # mất cả câu. Chỉ retry với lỗi hết bộ nhớ — lỗi khác (bug code, tokenizer...) thì
+                # retry chỉ tốn thời gian.
+                for attempt, tables in enumerate(_retry_ladder(n_tables)):
+                    if attempt:
+                        prompt = build_prompt(
+                            result,
+                            max_tables=tables,
+                            max_csv_chars=int(retrieval_cfg["max_csv_chars"]),
+                            max_prompt_chars=int(gen_cfg["max_prompt_chars"]),
+                        )
+                        stats["generate_retried"] += 1
+                        logger.warning(
+                            "[%d/%d] id=%s thử lại với %d bảng (prompt %d ký tự)",
+                            i, len(pending), result.id, tables, len(prompt.system) + len(prompt.user),
+                        )
                     try:
-                        import torch  # type: ignore[import-not-found]
-
-                        torch.cuda.empty_cache()
-                    except Exception:  # noqa: BLE001 - best-effort, không để dọn cache làm chết run
-                        pass
+                        completion = llm.complete(prompt.system, prompt.user)
+                        code = finalize_code(extract_code(completion))
+                        generation_error = None
+                        break
+                    except Exception as exc:  # noqa: BLE001 - OOM/lỗi generate khác không được làm
+                        # chết cả 1.012 câu; ghi nhận lỗi cho câu này rồi qua câu sau.
+                        completion = ""
+                        code = ""
+                        generation_error = f"LLM generate lỗi: {type(exc).__name__}: {exc}"
+                        oom = _is_out_of_memory(exc)
+                        stats["generate_oom"] += 1 if oom else 0
+                        logger.warning(
+                            "[%d/%d] id=%s generate lỗi (%d bảng, oom=%s): %s",
+                            i, len(pending), result.id, tables, oom, generation_error,
+                        )
+                        _free_gpu_memory()
+                        if not oom:
+                            break
             else:
                 # Không có model: chạy query giả để **đường thực thi thật vẫn được kiểm tra**
                 # (AST pre-check + load CSV + sandbox + ép kiểu kết quả). Nếu để code rỗng thì

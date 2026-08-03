@@ -180,6 +180,26 @@ def test_to_num_helper_is_loader_agnostic(code_table):
     assert outcome.alt_value == 2000.0, outcome.alt_error
 
 
+def test_to_num_callable_as_series_method(csv_file):
+    """Pilot thật: LLM gọi `col.to_num()` như method -> AttributeError, mất trắng câu.
+    Helper ghép vào pandas_query giờ gắn luôn method cho Series/DataFrame nên cả 2 cách đều chạy."""
+    from r2ai.prompting.build_prompt import finalize_code
+
+    code = finalize_code("result = float(df1.iloc[:, 2].to_num().sum())")
+    outcome = run_pandas_code(code, {"df1": csv_file}, timeout_s=60, cross_check_reader=True)
+    assert outcome.ok, outcome.error
+    assert outcome.value == pytest.approx(816.523338816e9 + 301.6e9, rel=1e-9)
+    assert outcome.alt_value == outcome.value  # bền với cả cách đọc CSV mặc định
+
+
+def test_to_num_dataframe_method(csv_file):
+    from r2ai.prompting.build_prompt import finalize_code
+
+    code = finalize_code("nums = df1.iloc[:, 2:].to_num()\nresult = float(nums.max().max())")
+    outcome = run_pandas_code(code, {"df1": csv_file}, timeout_s=60)
+    assert outcome.ok and outcome.value == pytest.approx(816523338816.0)
+
+
 def test_ast_precheck_reports_syntax_error():
     with pytest.raises(SandboxError, match="SyntaxError"):
         ast_precheck("result = (1 +")

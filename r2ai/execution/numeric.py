@@ -23,6 +23,12 @@ _DIGIT_RE = re.compile(r"\d")
 # cụt code khi hết `max_new_tokens`), và (2) `pandas_query` cuối cùng vẫn tự chứa 100% — vẫn chạy
 # lại được độc lập nếu BTC re-execute trong môi trường của họ, không phụ thuộc namespace của mình.
 # `test_prompt_number_helper_matches_numeric_module` (tests/test_sandbox.py) khoá 2 bản này khớp nhau.
+#
+# Cuối đoạn có gắn thêm `pd.Series.to_num` / `pd.DataFrame.to_num`: pilot thật cho thấy LLM hay gọi
+# `col.to_num()` như method của pandas dù prompt nói rõ đây là hàm tự do (`AttributeError: 'Series'
+# object has no attribute 'to_num'` — mất trắng 1 câu). Gắn method vào đúng đoạn văn bản được ghép
+# vào `pandas_query` nên vẫn tự chứa 100%; bọc try/except để đoạn helper này exec được cả khi
+# namespace không có `pd` (vd unit test exec riêng helper).
 TO_NUM_HELPER_SOURCE = '''\
 def to_num(s):
     s = str(s).strip()
@@ -48,7 +54,14 @@ def to_num(s):
         v = float(s)
     except ValueError:
         return None
-    return -v if neg else v'''
+    return -v if neg else v
+
+
+try:  # cho phép gọi cả kiểu method (`col.to_num()`) — LLM hay viết vậy dù prompt nói là hàm tự do
+    pd.Series.to_num = lambda self: self.map(to_num)
+    pd.DataFrame.to_num = lambda self: self.map(to_num)
+except Exception:
+    pass'''
 
 
 def parse_vn_number(value: object) -> float | None:

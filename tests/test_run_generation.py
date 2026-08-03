@@ -119,6 +119,87 @@ def test_llm_crash_does_not_kill_whole_run(retrieval_file, tmp_path):
     assert all(row["pandas_query"] == "" for row in rows)
 
 
+@pytest.fixture()
+def retrieval_file_6_tables(tmp_path):
+    """1 câu, 6 candidate — để giảm `max_tables` thật sự làm prompt ngắn lại."""
+    path = tmp_path / "retrieval6.jsonl"
+    result = RetrievalResult(
+        id=1,
+        question="Câu hỏi nhiều bảng?",
+        tickers=["NKG"],
+        years=[2022],
+        candidates=[
+            RetrievalCandidate(
+                table_ref=f"NKG_financial_statements_2022_consolidated|{100 + n}",
+                doc_name="NKG_financial_statements_2022_consolidated",
+                ticker="NKG",
+                year=2022,
+                scope="consolidated",
+                line=100 + n,
+                rank=n,
+                score=10.0 - n,
+                csv_text=CSV_TEXT * 8,  # đủ dài để mỗi bảng đóng góp đáng kể vào prompt
+            )
+            for n in range(6)
+        ],
+    )
+    path.write_text(result.model_dump_json() + "\n", encoding="utf-8")
+    return path
+
+
+class _OomUntilShortPrompt:
+    """Giả lập OOM thật: chỉ generate được khi prompt đã ngắn lại (ít bảng hơn)."""
+
+    def __init__(self, limit_chars: int) -> None:
+        self.limit_chars = limit_chars
+        self.calls: list[int] = []
+
+    def complete(self, system: str, user: str) -> str:
+        size = len(system) + len(user)
+        self.calls.append(size)
+        if size > self.limit_chars:
+            raise RuntimeError(
+                f"CUDA out of memory. Tried to allocate 4.79 GiB (prompt {size} ký tự)"
+            )
+        return "result = float(len(df1))"
+
+
+def test_oom_retries_with_shorter_prompt_and_recovers(retrieval_file_6_tables, tmp_path):
+    """OOM phụ thuộc độ dài prompt -> phải thử lại với ít bảng hơn thay vì bỏ trắng câu."""
+    probe = _OomUntilShortPrompt(limit_chars=0)  # OOM mọi lần, chỉ để đo kích thước từng bậc
+    run(llm=probe, retrieval_path=retrieval_file_6_tables, out_path=tmp_path / "p0.jsonl",
+        work_dir=tmp_path / "e0", limit=1, resume=False)
+    assert len(probe.calls) == 4, probe.calls  # thang retry 6 -> 3 -> 2 -> 1
+    assert probe.calls == sorted(probe.calls, reverse=True), probe.calls  # prompt ngắn dần thật
+
+    # Ngưỡng nằm giữa bậc 1 và bậc 2 -> lần thử đầu OOM, lần thử thứ 2 (3 bảng) phải thành công.
+    llm = _OomUntilShortPrompt(limit_chars=(probe.calls[0] + probe.calls[1]) // 2)
+    out = tmp_path / "p1.jsonl"
+    stats = run(llm=llm, retrieval_path=retrieval_file_6_tables, out_path=out,
+                work_dir=tmp_path / "e1", limit=1, resume=False)
+    assert stats["generate_oom"] == 1, stats  # OOM đúng 1 lần (ở prompt đầy đủ)
+    assert stats["generate_retried"] == 1, stats  # rồi dựng lại prompt ngắn hơn 1 lần
+    assert stats["exec_ok"] == 1, stats  # và CỨU được câu đó
+    rows = _rows(out)
+    assert len(rows) == 1 and rows[0]["exec_ok"] and rows[0]["answer"] is not None
+
+
+def test_non_oom_error_is_not_retried(retrieval_file, tmp_path):
+    """Lỗi không phải OOM thì retry vô nghĩa — chỉ gọi model 1 lần rồi ghi lỗi."""
+    class _Broken:
+        def __init__(self): self.n = 0
+        def complete(self, system, user):
+            self.n += 1
+            raise ValueError("lỗi tokenizer, không phải OOM")
+
+    llm = _Broken()
+    out = tmp_path / "p.jsonl"
+    stats = run(llm=llm, retrieval_path=retrieval_file, out_path=out, work_dir=tmp_path / "e",
+                limit=1, resume=False)
+    assert llm.n == 1 and stats["generate_oom"] == 0 and stats["generate_retried"] == 0
+    assert stats["exec_failed"] == 1
+
+
 def test_materialize_csvs_writes_expected_filenames(tmp_path):
     result = RetrievalResult(
         id=1,
