@@ -157,6 +157,7 @@ def _run(code: str, csv_paths: dict[str, str], queue) -> None:  # pragma: no cov
     OS còn nguội có thể mất hàng chục giây và làm timeout báo nhầm).
     """
     import contextlib
+    import warnings
 
     try:
         import pandas as pd
@@ -173,7 +174,12 @@ def _run(code: str, csv_paths: dict[str, str], queue) -> None:  # pragma: no cov
             namespace.setdefault("df", next(iter(frames.values())))
 
         buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
+        # LLM đôi khi dùng API pandas đã deprecate (vd `DataFrame.applymap`) — vẫn chạy đúng, chỉ
+        # in FutureWarning/DeprecationWarning gây nhiễu log. Nuốt riêng 2 loại này, KHÔNG nuốt
+        # warning khác (vd `RuntimeWarning` chia 0/NaN có thể là dấu hiệu lỗi thật, cần thấy).
+        with contextlib.redirect_stdout(buffer), warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=FutureWarning)
+            warnings.simplefilter("ignore", category=DeprecationWarning)
             exec(compile(code, "<pandas_query>", "exec"), namespace)  # noqa: S102
         if "result" not in namespace:
             queue.put(("done", False, None, "Code không gán biến `result`", buffer.getvalue()[:2000]))

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+import queue as queue_module
+
 from r2ai.execution.numeric import answers_match, is_numeric_cell, parse_vn_number, to_float
-from r2ai.execution.sandbox import SandboxError, ast_precheck, run_pandas_code
+from r2ai.execution.sandbox import SandboxError, _run, ast_precheck, run_pandas_code
 
 
 @pytest.fixture()
@@ -185,6 +187,29 @@ def test_run_pandas_code_missing_csv(tmp_path):
 
 def test_run_pandas_code_empty_query(csv_file):
     assert not run_pandas_code("   ", {"df1": csv_file}).ok
+
+
+def test_deprecated_pandas_api_warning_is_suppressed(csv_file, recwarn):
+    """LLM đôi khi dùng API pandas đã deprecate (vd `.applymap`) — vẫn phải chạy đúng và KHÔNG in
+    FutureWarning/DeprecationWarning ra ngoài (chỉ là noise, không phải lỗi thật cần thấy).
+
+    Gọi trực tiếp `_run` (thân thực thi, không qua multiprocessing) để `recwarn` của pytest bắt
+    được warning trong CÙNG process — nếu code suppress warning bên trong `_run` không hoạt động,
+    warning sẽ lọt ra tới đây và test fail.
+    """
+    q: queue_module.Queue = queue_module.Queue()
+    _run(
+        "result = float(df1.applymap(lambda x: x).shape[0])",
+        {"df1": str(csv_file)},
+        q,
+    )
+    assert q.get_nowait() == ("ready",)
+    msg = q.get_nowait()
+    assert msg[1] is True, msg  # (kind, ok, value, error, stdout)
+    assert msg[2] == 2.0
+    assert not any(issubclass(w.category, (FutureWarning, DeprecationWarning)) for w in recwarn.list), [
+        str(w.message) for w in recwarn.list
+    ]
 
 
 def test_run_pandas_code_non_scalar_result_is_reported(csv_file):
