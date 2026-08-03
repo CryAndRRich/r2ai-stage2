@@ -150,6 +150,7 @@ def run(
     resume: bool = True,
     dry_run: bool = False,
     stub_query: str | None = None,
+    llm: "LocalLLM | None" = None,
 ) -> dict:
     config = load_config(config_path)
     gen_cfg = config["generation"]
@@ -173,8 +174,9 @@ def run(
     if dry_run and not stub_query:
         stub_query = DEFAULT_STUB_QUERY
 
-    llm = None
-    if not dry_run and not stub_query:
+    # `llm` có thể được truyền sẵn (đã load 1 lần) để gọi `run()` nhiều lần (pilot rồi full) trong
+    # cùng 1 process Jupyter mà không phải nạp lại model 7B từ đầu mỗi lần — xem notebooks/kaggle_generate.ipynb.
+    if llm is None and not dry_run and not stub_query:
         llm = LocalLLM(
             model_name or gen_cfg["model"],
             load_in_4bit=bool(gen_cfg["load_in_4bit"]),
