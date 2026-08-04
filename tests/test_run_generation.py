@@ -62,6 +62,36 @@ def test_path_helpers_accept_plain_strings(retrieval_file, tmp_path):
     assert existing_ids(str(tmp_path / "chua-ton-tai.jsonl")) == set()
 
 
+def test_shard_splits_questions_without_overlap_or_loss(retrieval_file, tmp_path):
+    """Chạy song song 2 GPU: mỗi shard làm một nửa câu, hợp lại phải đủ và không trùng."""
+    seen: list[int] = []
+    for shard in (0, 1):
+        out = tmp_path / f"pred{shard}.jsonl"
+        stats = run(
+            retrieval_path=retrieval_file,
+            out_path=out,
+            work_dir=tmp_path / f"exec{shard}",
+            dry_run=True,
+            shard_index=shard,
+            shard_count=2,
+        )
+        assert stats["total"] == 1  # fixture có id 1 và 2 -> mỗi shard đúng 1 câu
+        seen.extend(row["id"] for row in _rows(out))
+    assert sorted(seen) == [1, 2]  # đủ, không trùng
+
+
+def test_shard_index_out_of_range_is_rejected(retrieval_file, tmp_path):
+    with pytest.raises(ValueError, match="shard_index"):
+        run(
+            retrieval_path=retrieval_file,
+            out_path=tmp_path / "pred.jsonl",
+            work_dir=tmp_path / "exec",
+            dry_run=True,
+            shard_index=2,
+            shard_count=2,
+        )
+
+
 def test_dry_run_actually_executes_sandbox(retrieval_file, tmp_path):
     """Bug 5: trước đây dry-run để query rỗng nên sandbox bị short-circuit, không test được gì."""
     out = tmp_path / "predictions.jsonl"

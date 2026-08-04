@@ -32,7 +32,7 @@ DEFAULTS: dict[str, Any] = {
         "model": "Qwen/Qwen2.5-Coder-7B-Instruct",
         "fallback_model": "Qwen/Qwen2.5-Coder-3B-Instruct",
         "load_in_4bit": True,
-        "max_new_tokens": 512,
+        "max_new_tokens": 320,  # code cần sinh ~10-20 dòng; xem ghi chú trong configs/baseline.yaml
         "temperature": 0.0,
         "max_prompt_chars": 24000,
     },

@@ -23,7 +23,10 @@ generation:
   model: Qwen/Qwen2.5-Coder-7B-Instruct
   fallback_model: Qwen/Qwen2.5-Coder-3B-Instruct   # dùng khi 7B không kịp giới hạn session Kaggle
   load_in_4bit: true
-  max_new_tokens: 512
+  # Hạ từ 512: code cần sinh chỉ ~10-20 dòng (đoạn mẫu trong prompt ~180 token). Decode là phần tốn
+  # thời gian nhất (tự hồi quy, T4 ~10-15 tok/s với 4-bit), nên cắt trần này giảm trực tiếp thời gian
+  # của những câu model lan man tới sát trần, và giảm KV cache lúc decode.
+  max_new_tokens: 320
   temperature: 0.0          # greedy — cần tái lập được kết quả
   # Hạ từ 24000: pilot 20 câu trên T4 OOM ở 4 câu, 3/4 câu đó có prompt 6 bảng > 16k ký tự
   # (16241 / 18737 / 18066). Retry cứu được hết nhưng tốn 1 lần prefill thừa (~20% số câu) và

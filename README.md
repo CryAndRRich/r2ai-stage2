@@ -34,6 +34,9 @@ python -m r2ai.sanity.retrieval_probe --show 10
 
 # 4. Sinh + thực thi pandas_query (chạy trên Kaggle — xem notebooks/kaggle_generate.ipynb)
 python -m r2ai.generation.run_generation --dry-run --limit 5   # local: chỉ test prompt + sandbox
+# Chạy song song nhiều GPU: 1 process/GPU, mỗi process 1 shard (chia theo id % n), rồi gộp file lại.
+# CUDA_VISIBLE_DEVICES=0 python -m r2ai.generation.run_generation --shard 0/2 --out pred0.jsonl &
+# CUDA_VISIBLE_DEVICES=1 python -m r2ai.generation.run_generation --shard 1/2 --out pred1.jsonl &
 
 # 5. Đóng gói (re-execute lại toàn bộ query ở local) + validate + zip
 python -m r2ai.packaging.assemble_submission

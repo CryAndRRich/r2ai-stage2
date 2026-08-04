@@ -182,7 +182,27 @@ class LocalLLM:
                     setattr(self.model.generation_config, field, None)
             self.model.generation_config.do_sample = False
 
+        # Chỉ tính logits cho token CUỐI, không cho toàn bộ prompt. Đây là nguyên nhân thật của những
+        # lần OOM xin **4,5-4,7 GiB cho một allocation** trong log pilot: lm_head trên toàn prompt là
+        # `seq × vocab(152.064) × 4 byte` (fp32 lúc softmax) — với ~8.200 token là đúng 4,67 GiB.
+        # transformers mới tự truyền tham số này trong `generate`, bản cũ thì không; tên tham số đã
+        # đổi (`num_logits_to_keep` -> `logits_to_keep`) nên dò 1 lần bằng chính chữ ký hàm forward.
+        self._logits_kwargs: dict = {}
+        try:
+            import inspect
+
+            forward_params = inspect.signature(self.model.forward).parameters
+            for name in ("logits_to_keep", "num_logits_to_keep"):
+                if name in forward_params:
+                    self._logits_kwargs = {name: 1}
+                    break
+        except (TypeError, ValueError):  # chữ ký bị wrap/không đọc được -> để mặc định
+            pass
+        logger.info("logits_to_keep = %s", self._logits_kwargs or "(không hỗ trợ, để mặc định)")
+
     def complete(self, system: str, user: str) -> str:
+        import gc
+
         import torch  # type: ignore[import-not-found]
 
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -190,23 +210,40 @@ class LocalLLM:
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         greedy = self.temperature <= 0.0
         output = None
+        # Dọn TRƯỚC khi generate, không chỉ sau: OOM thật xảy ra ngay lúc xin thêm ~1GB trong khi
+        # process đã giữ 13,6-14,4GB — phần lớn là block của câu trước còn nằm trong allocator.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         try:
             with torch.inference_mode():
-                output = self.model.generate(
-                    **inputs,
-                    max_new_tokens=self.max_new_tokens,
-                    do_sample=not greedy,
-                    temperature=None if greedy else self.temperature,
-                    pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
-                )
+                try:
+                    output = self.model.generate(
+                        **inputs,
+                        max_new_tokens=self.max_new_tokens,
+                        do_sample=not greedy,
+                        temperature=None if greedy else self.temperature,
+                        pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                        **self._logits_kwargs,
+                    )
+                except TypeError as exc:
+                    # Bản transformers đã tự truyền tham số này -> "got multiple values". Bỏ và nhớ.
+                    if not self._logits_kwargs:
+                        raise
+                    logger.warning("bỏ %s (%s)", self._logits_kwargs, exc)
+                    self._logits_kwargs = {}
+                    output = self.model.generate(
+                        **inputs,
+                        max_new_tokens=self.max_new_tokens,
+                        do_sample=not greedy,
+                        temperature=None if greedy else self.temperature,
+                        pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                    )
             generated = output[0][inputs["input_ids"].shape[-1] :]
             return self.tokenizer.decode(generated, skip_special_tokens=True)
         finally:
-            # Giải phóng NGAY sau MỖI câu (kể cả câu thành công), không đợi tới lúc lỗi mới dọn:
-            # KV cache + tensor output của câu trước vẫn bị allocator giữ nên bộ nhớ tích tụ dần —
-            # đã thấy thật: câu đầu process dùng ~10,5GB, tới câu thứ 4 đã giữ 13,67GB rồi OOM khi
-            # chỉ cần thêm 932MB.
             del inputs, output
+            gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -224,6 +261,8 @@ def run(
     dry_run: bool = False,
     stub_query: str | None = None,
     llm: "LocalLLM | None" = None,
+    shard_index: int | None = None,
+    shard_count: int | None = None,
 ) -> dict:
     config = load_config(config_path)
     gen_cfg = config["generation"]
@@ -239,6 +278,13 @@ def run(
     results = load_retrieval_results(retrieval_file)
     if ids:
         results = [r for r in results if r.id in ids]
+    if shard_count:
+        # Chia câu hỏi cho nhiều process chạy song song (1 process / 1 GPU — xem notebook mục 3b).
+        # Chia theo `id % shard_count` chứ không cắt đoạn liên tiếp: (1) ổn định khi `--resume`,
+        # (2) mỗi shard nhận đều các dạng câu nên tốc độ 2 shard không lệch nhau nhiều.
+        if not 0 <= (shard_index or 0) < shard_count:
+            raise ValueError(f"shard_index phải trong [0, {shard_count}), nhận {shard_index}")
+        results = [r for r in results if r.id % shard_count == (shard_index or 0)]
     done = existing_ids(predictions_file) if resume else set()
     pending = [r for r in results if r.id not in done]
     if limit is not None:
@@ -380,11 +426,22 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="pandas_query cố định dùng thay output LLM (mặc định khi --dry-run: DEFAULT_STUB_QUERY)",
     )
+    parser.add_argument(
+        "--shard",
+        default=None,
+        help='chia việc cho nhiều process song song, dạng "i/n" (vd "0/2" và "1/2" cho 2 GPU)',
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=args.log_level, format="%(levelname)s %(name)s: %(message)s")
     ids = {int(p) for p in args.ids.replace(" ", "").split(",") if p} if args.ids else None
+    shard_index = shard_count = None
+    if args.shard:
+        raw_index, _, raw_count = args.shard.partition("/")
+        if not raw_count.isdigit():
+            parser.error(f'--shard phải có dạng "i/n" (vd "0/2"), nhận {args.shard!r}')
+        shard_index, shard_count = int(raw_index), int(raw_count)
     stats = run(
         retrieval_path=args.retrieval,
         out_path=args.out,
@@ -396,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
         resume=not args.no_resume,
         dry_run=args.dry_run,
         stub_query=args.stub_query,
+        shard_index=shard_index,
+        shard_count=shard_count,
     )
     print(json.dumps(stats, ensure_ascii=False, indent=2))
     return 0
