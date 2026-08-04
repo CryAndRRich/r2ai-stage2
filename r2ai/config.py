@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from r2ai.constants import ANSWER_ABS_TOL, DEFAULT_CONFIG_PATH
+from r2ai.constants import ANSWER_ABS_TOL, ANSWER_REL_TOL, DEFAULT_CONFIG_PATH
 
 DEFAULTS: dict[str, Any] = {
     "extraction": {
@@ -42,7 +42,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "answer": {
         "abs_tol": ANSWER_ABS_TOL,
-        "rel_tol": 0.0,
+        "rel_tol": ANSWER_REL_TOL,
         "fallback_answer": 0.0,  # dùng khi query lỗi — submission bắt buộc có answer float
     },
 }

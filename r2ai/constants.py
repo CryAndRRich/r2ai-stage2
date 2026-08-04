@@ -69,5 +69,10 @@ MAX_SPAN = 40
 # Bỏ qua bảng quá lớn (gần chắc chắn là lỗi parse) để không làm nổ bộ nhớ.
 MAX_TABLE_CELLS = 20_000
 
-# Ngưỡng khớp đáp án theo công thức đánh giá của cuộc thi.
-ANSWER_ABS_TOL = 1e-2
+# Ngưỡng khớp đáp án — BTC trả lời ở discussion: "Ngưỡng sai số cho phép là không quá 0,02% so với
+# đáp án", tức sai số **TƯƠNG ĐỐI** 2e-4, KHÔNG phải sai số tuyệt đối 1e-2 như bản v1 (suy từ công
+# thức `math.isclose(..., abs_tol=1e-2)` của repo ViFinQA tham khảo). Khác biệt quan trọng theo 2
+# chiều: với số tiền lớn thì 0,02% rộng hơn 0,01 rất nhiều, còn với đáp án nhỏ (hệ số/lần, tỉ lệ)
+# thì 0,02% chặt hơn — nên KHÔNG được làm tròn đáp án về 2 chữ số thập phân nữa (xem system prompt).
+ANSWER_REL_TOL = 2e-4
+ANSWER_ABS_TOL = 0.0

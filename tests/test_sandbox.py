@@ -324,8 +324,15 @@ def test_is_numeric_cell():
 
 
 def test_answers_match_uses_competition_tolerance():
-    assert answers_match(100.0, 100.005)
-    assert not answers_match(100.0, 100.5)
+    """BTC (discussion): sai số cho phép ≤ 0,02% so với đáp án — TƯƠNG ĐỐI, không phải abs_tol=1e-2."""
+    assert answers_match(100.0, 100.005)  # 0,005% -> đạt
+    assert not answers_match(100.0, 100.5)  # 0,5% -> không đạt
+    # Số tiền lớn: 0,02% rộng hơn abs_tol=0,01 rất nhiều.
+    assert answers_match(1_000_000_000.0, 1_000_100_000.0)  # 0,01% -> đạt
+    assert not answers_match(1_000_000_000.0, 1_001_000_000.0)  # 0,1% -> không đạt
+    # Đáp án nhỏ: 0,02% CHẶT hơn -> làm tròn 2 chữ số thập phân là đủ để trượt.
+    assert not answers_match(1.234567, round(1.234567, 2))
+    assert answers_match(1.234567, 1.2347)
 
 
 def test_to_float_handles_numpy_and_bool():

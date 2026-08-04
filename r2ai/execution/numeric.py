@@ -12,7 +12,7 @@ import math
 import re
 import unicodedata
 
-from r2ai.constants import ANSWER_ABS_TOL
+from r2ai.constants import ANSWER_ABS_TOL, ANSWER_REL_TOL
 
 _NUMERIC_CHARS_RE = re.compile(r"[\d.,\-+()%\s]+")
 _DIGIT_RE = re.compile(r"\d")
@@ -121,8 +121,14 @@ def is_numeric_cell(value: object) -> bool:
     return parse_vn_number(value) is not None
 
 
-def answers_match(expected: float, actual: float, *, abs_tol: float = ANSWER_ABS_TOL, rel_tol: float = 0.0) -> bool:
-    """Công thức khớp đáp án của cuộc thi: `math.isclose(rel_tol=0.0, abs_tol=1e-2)`."""
+def answers_match(
+    expected: float, actual: float, *, abs_tol: float = ANSWER_ABS_TOL, rel_tol: float = ANSWER_REL_TOL
+) -> bool:
+    """Khớp đáp án theo ngưỡng BTC công bố ở discussion: **sai số tương đối ≤ 0,02%**.
+
+    Không phải `abs_tol=1e-2` như giả định ban đầu (suy từ repo ViFinQA tham khảo): với số tiền lớn
+    thì 0,02% rộng hơn nhiều, còn với đáp án nhỏ (hệ số, số lần, tỉ lệ) thì 0,02% chặt hơn.
+    """
     return math.isclose(expected, actual, rel_tol=rel_tol, abs_tol=abs_tol)
 
 

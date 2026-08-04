@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
+from r2ai.constants import TEMPLATES_DIR
 from r2ai.execution.numeric import TO_NUM_HELPER_SOURCE, parse_vn_number
 from r2ai.execution.sandbox import run_pandas_code
 from r2ai.prompting.build_prompt import build_prompt, extract_code, finalize_code, used_variables, variable_name
@@ -73,6 +76,68 @@ def test_build_prompt_without_candidates():
     prompt = build_prompt(result)
     assert prompt.variables == {}
     assert "không có bảng" in prompt.user
+
+
+def test_build_prompt_embeds_precomputed_column_and_unit_hints():
+    """Bug 15: prompt phải nói rõ cột nào là kỳ được hỏi + hệ số đổi đơn vị, không để model tự đoán."""
+    csv_text = ",31/12/2022VND,01/01/2022VND\nTiền,1.000.000.000,900.000.000\n"
+    prompt = build_prompt(_result(1, csv_text=csv_text), max_tables=1)
+    assert "Đơn vị đáp án: tỷ đồng" in prompt.user
+    assert "CỘT ỨNG VỚI KỲ ĐƯỢC HỎI -> .iloc[:, 1]" in prompt.user
+    assert "÷ 1.000.000.000" in prompt.user
+
+
+def test_build_prompt_hint_admits_uncertainty_instead_of_guessing():
+    csv_text = "Chỉ tiêu,Tổng cộng\nTiền,1.000\n"
+    prompt = build_prompt(_result(1, csv_text=csv_text), max_tables=1)
+    assert "chưa xác định được" in prompt.user
+
+
+def test_system_prompt_sample_pattern_runs_and_picks_the_hinted_column(tmp_path):
+    """Đoạn mẫu trong `system_pandas.txt` phải CHẠY THẬT và lấy đúng cột kỳ được hỏi.
+
+    Case thật id=1 (VJC): bảng có cột 2018 và 2017, câu hỏi hỏi 2018 theo triệu đồng.
+    Mẫu cũ (`found[-1]`) trả 69.917.578.051 (cột 2017, không đổi đơn vị) — sai cả cột lẫn đơn vị.
+    """
+    sample = re.search(r"```python\n(.*?)```", _system_template(), re.DOTALL)
+    assert sample is not None, "system_pandas.txt phải còn đoạn mẫu code"
+    code = finalize_code(sample.group(1).replace("<nhãn dòng>", "Lãi tiền gửi"))
+
+    csv_file = tmp_path / "table.csv"
+    csv_file.write_text(",2018VND,2017VND\nLãi tiền gửi,208.253.201.298,69.917.578.051\n", encoding="utf-8")
+    outcome = run_pandas_code(code, {"df1": csv_file}, timeout_s=15, cross_check_reader=True)
+    assert outcome.ok
+    # 208.253.201.298 / 1e6, KHÔNG phải cột 2017 — và giữ nguyên độ chính xác (ngưỡng chấm là
+    # 0,02% TƯƠNG ĐỐI nên không được làm tròn về 2 chữ số thập phân).
+    assert outcome.value == 208253.201298
+    assert outcome.alt_value == outcome.value  # bền với cả `pd.read_csv` mặc định (Bug 13)
+
+
+def test_system_prompt_sample_pattern_survives_missing_label(tmp_path):
+    sample = re.search(r"```python\n(.*?)```", _system_template(), re.DOTALL)
+    code = finalize_code(sample.group(1).replace("<nhãn dòng>", "Nhãn không tồn tại"))
+    csv_file = tmp_path / "table.csv"
+    csv_file.write_text(",2018VND\nLãi tiền gửi,208.253.201.298\n", encoding="utf-8")
+    outcome = run_pandas_code(code, {"df1": csv_file}, timeout_s=15)
+    assert outcome.ok and outcome.value == 0.0  # không crash, không gán None
+
+
+def test_system_prompt_forbids_taking_the_last_numeric_value():
+    template = _system_template()
+    assert "vals[-1]" in template and "NEVER take" in template
+
+
+def test_system_prompt_matches_competition_tolerance_and_percent_convention():
+    """BTC (discussion): sai số ≤ 0,02% TƯƠNG ĐỐI, và đáp án % trả về theo thang % (90, không phải 0,9)."""
+    template = _system_template()
+    assert "0.02% RELATIVE" in template
+    assert "Do NOT round" in template
+    assert "round(" not in template  # đoạn mẫu không còn làm tròn 2 chữ số thập phân
+    assert "`result = 90.0` is correct" in template
+
+
+def _system_template() -> str:
+    return (TEMPLATES_DIR / "system_pandas.txt").read_text(encoding="utf-8")
 
 
 def test_extract_code_strips_fence_and_imports():

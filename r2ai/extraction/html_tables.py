@@ -205,8 +205,113 @@ def grid_to_csv(grid: list[list[str]]) -> str:
     return buffer.getvalue()
 
 
+HEADER_JOIN = " | "  # phân cách giữa các tầng header khi gộp -> "Số cuối năm | Giá trị"
+MAX_HEADER_ROWS = 3  # tầng 1 (colspan) + tầng 2 (nhãn con) + tầng 3 (dòng đơn vị) là mức sâu nhất gặp thật
+_MAX_HEADER_CELL_CHARS = 60  # ô header là nhãn ngắn; ô dài gần như luôn là câu văn của dòng dữ liệu
+_PERIOD_TOKEN_RE = re.compile(
+    r"\d{1,2}\s*[/\-.]\s*\d{1,2}\s*[/\-.]\s*\d{2,4}"  # 31/12/2024
+    r"|\d{1,2}\s*[/\-.]\s*(?:19|20)\d{2}"  # 12/2024
+    r"|[QT]\s*\d"  # Q1, T3
+    r"|(?:19|20)\d{2}"  # 2024
+)
+_UNIT_ONLY_RE = re.compile(
+    r"^(?:đơn\s*vị\s*(?:tính)?\s*[:\-]?\s*)?"
+    r"(?:(?:nghìn\s+tỷ|nghìn|triệu|tỷ)\s*)?"
+    r"(?:vnd|đồng|vn\s*đ|usd|eur|jpy|%)$",
+    re.IGNORECASE,
+)
+
+
+def _duplicate_positions(header: list[str]) -> list[int]:
+    """Vị trí các cột có tên (không rỗng) trùng với ≥1 cột khác — dấu hiệu colspan đã bị làm phẳng."""
+    counts: dict[str, int] = {}
+    for cell in header:
+        if cell:
+            counts[cell] = counts.get(cell, 0) + 1
+    return [i for i, cell in enumerate(header) if cell and counts[cell] > 1]
+
+
+def _looks_numeric_cell(cell: str) -> bool:
+    """Ô còn chữ số sau khi bỏ các token kỳ (năm/ngày/quý) -> gần như chắc chắn là ô dữ liệu.
+
+    Không dùng "có chữ số" trần: nhãn header hợp lệ rất hay chứa năm hoặc ngày
+    ("31/12/2024", "Khấu hao TSCĐ Năm 2024", "Q1/2024"). Ngược lại một ô số liệu thật
+    ("39.562.950.995", "2,92%") luôn còn lại chữ số sau khi bỏ token kỳ.
+    """
+    return bool(re.search(r"\d", _PERIOD_TOKEN_RE.sub(" ", cell)))
+
+
+def _is_unit_row(row: list[str]) -> bool:
+    """Dòng chỉ gồm token đơn vị ("Triệu VND", "%", "Đơn vị tính: VND") -> tầng header đơn vị."""
+    cells = [c.strip() for c in row if c.strip()]
+    return len(cells) >= 2 and all(_UNIT_ONLY_RE.match(c) for c in cells)
+
+
+def _is_header_continuation(header: list[str], row: list[str]) -> bool:
+    """`row` có phải tầng header tiếp theo của `header` (chứ không phải dòng dữ liệu đầu tiên)?
+
+    Điều kiện (cố ý chặt — nhận nhầm 1 dòng dữ liệu thành header là mất luôn 1 dòng số liệu):
+    1. `header` đang có tên cột trùng lặp (hệ quả của colspan bị làm phẳng) — trừ khi `row` là
+       dòng đơn vị thuần, trường hợp đó vẫn nên gộp để đơn vị nằm trong tên cột.
+    2. `row` không chứa ô số liệu nào (nhãn kỳ dạng năm/ngày không tính là số).
+    3. `row` phủ đủ các cột đang trùng tên và ô ở đó không rỗng — tức nó thật sự mang thông tin
+       phân biệt cho đúng những cột đã mất thông tin.
+    4. Mọi ô của `row` đều ngắn (nhãn header), không phải câu văn dài của dòng dữ liệu.
+    """
+    if not row or not any(cell.strip() for cell in row):
+        return False
+    if any(_looks_numeric_cell(cell) for cell in row):
+        return False
+    if any(len(cell) > _MAX_HEADER_CELL_CHARS for cell in row):
+        return False
+    if _is_unit_row(row):
+        return True
+    duplicates = _duplicate_positions(header)
+    if not duplicates:
+        return False
+    if any(i >= len(row) or not row[i].strip() for i in duplicates):
+        return False
+    # Phải phân biệt được: nếu mọi cột trùng tên vẫn nhận cùng một nhãn con thì gộp cũng vô ích
+    # (và rủi ro ăn nhầm dòng dữ liệu toàn text giống nhau do rowspan carry).
+    return len({row[i] for i in duplicates}) >= 2
+
+
+def _merge_header_row(header: list[str], row: list[str]) -> list[str]:
+    """Gộp 1 tầng header vào tên cột hiện có; bỏ phần trùng lặp để không ra "Tên | Tên"."""
+    width = max(len(header), len(row))
+    merged: list[str] = []
+    for i in range(width):
+        top = header[i].strip() if i < len(header) else ""
+        sub = row[i].strip() if i < len(row) else ""
+        if not sub or sub == top or sub in top.split(HEADER_JOIN):
+            merged.append(top)
+        elif not top:
+            merged.append(sub)
+        else:
+            merged.append(f"{top}{HEADER_JOIN}{sub}")
+    return merged
+
+
 def split_header(grid: list[list[str]]) -> tuple[list[str], list[list[str]]]:
-    """Coi dòng 0 là header (không heuristic phức tạp ở v1)."""
+    """Tách header khỏi dữ liệu, **gộp header nhiều tầng** thành một dòng tên cột duy nhất.
+
+    Bug 14: bản v1 luôn lấy đúng `grid[0]`. Với bảng header 2 tầng (tầng 1 "Số cuối năm"/"Số đầu năm"
+    dùng colspan, tầng 2 "Giá trị"/"Dự phòng"), colspan expansion làm tầng 1 lặp giá trị nên header
+    CSV có **tên cột trùng nhau y hệt** (đo thật: 870/4.770 bảng = 18,2% bài nộp V1), còn tầng 2 —
+    nơi chứa thông tin phân biệt — rơi xuống thành dòng dữ liệu đầu tiên. Model không thể chọn đúng
+    cột niên độ/kỳ từ header như vậy, nên đây là điều kiện tiên quyết để sửa Bug 15.
+
+    Gộp tối đa `MAX_HEADER_ROWS` tầng và chỉ khi dòng sau thật sự **trông như header** — xem
+    `_is_header_continuation`. Grid trong cache không đổi (hàm này chạy lúc đọc), nên không cần
+    extract lại corpus; chỉ cần build lại `tables_index.jsonl` + retrieval.
+    """
     if not grid:
         return [], []
-    return grid[0], grid[1:]
+    header = list(grid[0])
+    consumed = 1
+    while consumed < len(grid) - 1 and consumed < MAX_HEADER_ROWS:
+        if not _is_header_continuation(header, grid[consumed]):
+            break
+        header = _merge_header_row(header, grid[consumed])
+        consumed += 1
+    return header, [list(row) for row in grid[consumed:]]

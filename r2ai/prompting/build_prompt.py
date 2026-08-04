@@ -8,6 +8,8 @@ Quy ước tên biến: bảng thứ i nhúng vào prompt được gán `df1`, `
 from __future__ import annotations
 
 import ast
+import csv
+import io
 import re
 from dataclasses import dataclass
 from functools import lru_cache
@@ -15,6 +17,7 @@ from pathlib import Path
 
 from r2ai.constants import TEMPLATES_DIR
 from r2ai.execution.numeric import TO_NUM_HELPER_SOURCE
+from r2ai.prompting.hints import answer_unit, table_hint_lines
 from r2ai.schemas import RetrievalCandidate, RetrievalResult
 
 SYSTEM_TEMPLATE = "system_pandas.txt"
@@ -51,17 +54,44 @@ def _metadata_block(result: RetrievalResult) -> str:
         "aggregated": "báo cáo tổng hợp",
     }.get(result.scope or "", "không nêu rõ")
     lines.append(f"- Loại báo cáo được hỏi: {scope_text}")
+    unit = answer_unit(result.question)
+    if unit.no_conversion:
+        lines.append(f"- Đơn vị đáp án: KHÔNG đổi đơn vị — {unit.reason}")
+    elif unit.assumed:
+        lines.append("- Đơn vị đáp án: câu hỏi không nêu đơn vị -> trả về theo đơn vị gốc VND (đồng)")
+    else:
+        lines.append(f"- Đơn vị đáp án: {unit.label} (mọi giá trị lấy từ bảng phải đổi sang đơn vị này)")
     return "\n".join(lines)
 
 
-def _table_block(variable: str, candidate: RetrievalCandidate) -> str:
+def table_header_row(csv_text: str) -> list[str]:
+    """Dòng đầu của CSV nhúng trong prompt = header đã gộp nhiều tầng (xem Bug 14/`split_header`)."""
+    for row in csv.reader(io.StringIO(csv_text)):
+        return row
+    return []
+
+
+def _table_block(variable: str, candidate: RetrievalCandidate, result: RetrievalResult) -> str:
     scope = candidate.scope or "không rõ"
     context = candidate.context_before.strip() or "(không có)"
-    header = (
+    tag = (
         f'<table variable="{variable}" table_ref="{candidate.table_ref}" '
         f'ticker="{candidate.ticker}" year="{candidate.year}" scope="{scope}" page="{candidate.page}">'
     )
-    return f"{header}\n<!-- Ngữ cảnh ngay trước bảng: {context} -->\n{candidate.csv_text.rstrip()}\n</table>"
+    # Gợi ý tính sẵn bằng luật (Bug 15): cột nào ứng với kỳ được hỏi + hệ số đổi đơn vị. Model 7B
+    # gần như không tự làm đúng 2 việc này (đo thật: sai cột 83%, gần như không bao giờ đổi đơn vị).
+    hint, _target = table_hint_lines(
+        table_header_row(candidate.csv_text),
+        candidate.context_before,
+        question=result.question,
+        years=list(result.years),
+        table_year=candidate.year,
+    )
+    hint_block = "\n".join(f"<!-- {line} -->" for line in hint.splitlines())
+    return (
+        f"{tag}\n<!-- Ngữ cảnh ngay trước bảng: {context} -->\n{hint_block}\n"
+        f"{candidate.csv_text.rstrip()}\n</table>"
+    )
 
 
 def build_prompt(
@@ -94,7 +124,7 @@ def build_prompt(
 
         variables = {variable_name(i): c.table_ref for i, c in enumerate(candidates, start=1)}
         tables_block = "\n\n".join(
-            _table_block(variable_name(i), c) for i, c in enumerate(candidates, start=1)
+            _table_block(variable_name(i), c, result) for i, c in enumerate(candidates, start=1)
         )
         user = (
             user_template.replace("{{QUESTION}}", result.question)

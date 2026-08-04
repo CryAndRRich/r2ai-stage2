@@ -129,6 +129,125 @@ def test_parse_table_returns_empty_for_no_rows():
     assert parse_table("<table></table>") == []
 
 
+def test_split_header_merges_two_tier_header():
+    """Bug 14: header 2 tầng (colspan) làm 2 cột trùng tên y hệt -> không phân biệt được niên độ.
+
+    Grid thật (POW_financial_statements_2024_separate|961) sau colspan expansion.
+    """
+    grid = [
+        ["", "Số cuối năm", "Số cuối năm", "Số đầu năm", "Số đầu năm"],
+        ["", "Giá trị", "VND Số có khả năng trả nợ", "Giá trị", "VND Số có khả năng trả nợ"],
+        ["Tập đoàn Điện lực Việt Nam", "61.539.096.219", "61.539.096.219", "93.962.315.579", "93.962.315.579"],
+    ]
+    header, rows = split_header(grid)
+    assert header == [
+        "",
+        "Số cuối năm | Giá trị",
+        "Số cuối năm | VND Số có khả năng trả nợ",
+        "Số đầu năm | Giá trị",
+        "Số đầu năm | VND Số có khả năng trả nợ",
+    ]
+    assert len([h for h in header if h]) == len({h for h in header if h})  # không còn tên trùng
+    assert rows == [grid[2]]
+
+
+def test_split_header_merges_unit_row_even_without_duplicates():
+    """Dòng chỉ gồm token đơn vị là tầng header -> gộp để đơn vị nằm trong tên cột (cần cho Bug 15)."""
+    grid = [
+        ["", "31/12/2018", "01/01/2018"],
+        ["", "VND", "VND"],
+        ["Các khoản phải thu khác", "623.562.248.192", "623.276.654.204"],
+    ]
+    header, rows = split_header(grid)
+    assert header == ["", "31/12/2018 | VND", "01/01/2018 | VND"]
+    assert rows == [grid[2]]
+
+
+def test_split_header_merges_three_tiers():
+    grid = [
+        ["", "Số dư đầu năm", "Số phát sinh trong năm", "Số phát sinh trong năm", "Số dư cuối năm"],
+        ["", "Số dư đầu năm", "Số phải nộp", "Số đã nộp", "Số dư cuối năm"],
+        ["", "Triệu VND", "Triệu VND", "Triệu VND", "Triệu VND"],
+        ["1. Thuế GTGT", "1.243", "16.771", "(16.689)", "1.325"],
+    ]
+    header, rows = split_header(grid)
+    assert header == [
+        "",
+        "Số dư đầu năm | Triệu VND",
+        "Số phát sinh trong năm | Số phải nộp | Triệu VND",
+        "Số phát sinh trong năm | Số đã nộp | Triệu VND",
+        "Số dư cuối năm | Triệu VND",
+    ]
+    assert rows == [grid[3]]
+
+
+def test_split_header_keeps_single_tier_header_untouched():
+    grid = [["Mã số", "Chỉ tiêu", "Số cuối năm", "Số đầu năm"], ["110", "Tiền", "816", "500"]]
+    header, rows = split_header(grid)
+    assert header == grid[0]
+    assert rows == [grid[1]]
+
+
+def test_split_header_does_not_eat_data_row_with_numbers():
+    """Dòng dữ liệu (có ô số) không bao giờ được coi là tầng header, dù header có tên trùng."""
+    grid = [
+        ["", "Số cuối năm", "Số cuối năm"],
+        ["Tiền mặt", "1.234", "5.678"],
+        ["Tiền gửi", "10", "20"],
+    ]
+    header, rows = split_header(grid)
+    assert header == grid[0]
+    assert rows == grid[1:]
+
+
+def test_split_header_does_not_eat_long_text_data_row():
+    """Ô dài = câu văn của dòng dữ liệu, không phải nhãn header (case GVR 2015: '... 106 Công ty')."""
+    grid = [
+        ["Nội dung", "Nội dung", "Số lượng"],
+        ["-", "Tổng số Công ty con trong năm 2015 và tại thời điểm 31/12/2015", "106 Công ty"],
+        ["-", "Số lượng các Công ty con được hợp nhất", "106 Công ty"],
+    ]
+    header, rows = split_header(grid)
+    assert header == grid[0]
+    assert rows == grid[1:]
+
+
+def test_split_header_needs_distinguishing_subrow():
+    """Tầng 2 không phân biệt được gì (mọi cột trùng nhận cùng 1 nhãn) -> không gộp, tránh ăn nhầm."""
+    grid = [
+        ["", "Số cuối năm", "Số cuối năm"],
+        ["", "Ngắn hạn", "Ngắn hạn"],
+        ["Phải thu", "1.000", "2.000"],
+    ]
+    header, rows = split_header(grid)
+    assert header == grid[0]
+    assert rows == grid[1:]
+
+
+def test_split_header_keeps_at_least_one_data_row():
+    grid = [["", "Số cuối năm", "Số cuối năm"], ["", "Giá trị", "Dự phòng"]]
+    header, rows = split_header(grid)
+    assert header == grid[0]
+    assert rows == [grid[1]]
+
+
+def test_split_header_header_cell_with_year_is_not_data():
+    """Nhãn header rất hay chứa năm/ngày ('Khấu hao TSCĐ Năm 2024') — không được coi là ô số liệu."""
+    grid = [
+        ["31/12/2024", "Tài sản của bộ phận", "Tài sản của bộ phận", "Khấu hao TSCĐ Năm 2024"],
+        ["31/12/2024", "Nguyên giá TSCĐ HH", "Hao mòn lũy kế", "Khấu hao TSCĐ Năm 2024"],
+        ["Đường", "3.749.666.262.043", "(2.069.378.933.645)", "223.699.855.355"],
+    ]
+    header, rows = split_header(grid)
+    assert header == [
+        "31/12/2024",
+        "Tài sản của bộ phận | Nguyên giá TSCĐ HH",
+        "Tài sản của bộ phận | Hao mòn lũy kế",
+        "Khấu hao TSCĐ Năm 2024",
+    ]
+    assert rows == [grid[2]]
+
+
 def test_clean_cell_normalizes_whitespace_and_nbsp():
     assert clean_cell("  Tiền và  tương\nđương ") == "Tiền và tương đương"
 

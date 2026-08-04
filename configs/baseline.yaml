@@ -37,6 +37,9 @@ execution:
   startup_timeout_s: 120   # hạn riêng cho spawn process con + import pandas (cache nguội rất chậm)
 
 answer:
-  abs_tol: 0.01             # math.isclose(rel_tol=0.0, abs_tol=1e-2) theo công thức chấm
-  rel_tol: 0.0
+  # BTC trả lời ở discussion: "Ngưỡng sai số cho phép là không quá 0,02% so với đáp án" -> sai số
+  # TƯƠNG ĐỐI 2e-4, không phải tuyệt đối 1e-2 như giả định ban đầu. Hệ quả: đáp án nhỏ (hệ số/lần)
+  # không được làm tròn 2 chữ số thập phân nữa — system prompt đã bỏ rule làm tròn.
+  abs_tol: 0.0
+  rel_tol: 0.0002
   fallback_answer: 0.0      # answer bắt buộc là float -> dùng khi query lỗi

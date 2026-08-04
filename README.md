@@ -48,7 +48,7 @@ Test: `pytest tests/` (chạy từ `code/`).
 |---|---|
 | `r2ai/extraction/` | `html_tables.py` (lxml, colspan/rowspan) · `doc_scanner.py` · `context.py` (page marker + text trước bảng) · `table_store.py` (cache theo report) · `build_table_index.py` (CLI) |
 | `r2ai/retrieval/` | `tokenize.py` (underthesea + fallback) · `bm25_index.py` (bm25s + cache) · `metadata_filter.py` (ticker/năm/scope) · `company_meta.py` · `run_retrieval.py` (CLI) |
-| `r2ai/prompting/` | `templates/` (system + user) · `build_prompt.py` (nhúng CSV, gán `df1..dfN`, hậu xử lý output) |
+| `r2ai/prompting/` | `templates/` (system + user) · `hints.py` (tính sẵn: cột ↔ kỳ, đơn vị, hệ số đổi) · `build_prompt.py` (nhúng CSV + chú thích, gán `df1..dfN`, hậu xử lý output) |
 | `r2ai/execution/` | `sandbox.py` (AST pre-check + builtins whitelist + timeout process) · `numeric.py` (số kiểu VN) |
 | `r2ai/generation/` | `run_generation.py` (CLI Kaggle: LLM 4-bit, ghi predictions append+flush, `--resume`) |
 | `r2ai/packaging/` | `assemble_submission.py` (join + re-execute) · `zip_submission.py` (validate + zip) |
@@ -68,6 +68,13 @@ Test: `pytest tests/` (chạy từ `code/`).
   cụt khi hết `max_new_tokens`), `finalize_code()` (`build_prompt.py`) **tự ghép** `to_num()` (nối chuỗi
   văn bản, `numeric.TO_NUM_HELPER_SOURCE`) vào trước code LLM sinh ra — `pandas_query` cuối cùng vẫn tự
   chứa 100%, chỉ là LLM không cần tốn token viết lại nó.
+- **Gợi ý cột/đơn vị nhúng trong prompt là do pipeline tính bằng luật** (`prompting/hints.py`), không phải model
+  suy: mỗi bảng có 2 dòng `<!-- Cột theo kỳ: … -->` và `<!-- Đổi đơn vị: … -->` nói rõ cột nào ứng với kỳ được
+  hỏi và phải nhân hệ số nào. Đây là bản sửa Bug 15 (nguyên nhân chính khiến V1 chỉ đạt Answer Accuracy 1,4%).
+  Khi không đủ bằng chứng thì chú thích ghi "chưa xác định được" — cố ý không đoán.
+- **Sửa `split_header()` phải chạy lại index + retrieval**: hàm này chạy lúc *đọc* cache nên không cần extract
+  lại corpus (`EXTRACTION_VERSION` không đổi), nhưng `index_text` (BM25) và `csv_text` (nhúng prompt) đều dẫn
+  xuất từ header → phải `build_table_index` (đọc cache, ~1 phút) rồi `run_retrieval` lại.
 - **`relevant_tables` chỉ là id, không kèm file**: `data/*.csv` trong zip chỉ chứa bảng mà `evidence` tham chiếu
   (bảng thực sự dùng để tính `answer`), không phải toàn bộ bảng đã retrieve.
 - **Model**: Qwen2.5-Coder-7B-Instruct (open-weight, 11/2024, ≤14B — hợp lệ theo luật thi).

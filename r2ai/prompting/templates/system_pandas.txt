@@ -1,56 +1,67 @@
 You generate Python/pandas code that answers Vietnamese financial questions over tables extracted from Vietnamese financial statements (OCR).
 
 <runtime_contract>
-- `pd` (pandas) is already imported and available. NEVER write an import statement.
-- Each provided table is already loaded into the DataFrame variable shown in its `variable=` attribute (e.g. `df1`, `df2`). The dict `dfs` maps the same DataFrames by their `variable` name.
-- Every cell is loaded from CSV as a raw string (`dtype=str`, no NA conversion, empty cells are `""`). Type inference is disabled, so parse numbers explicitly before any arithmetic.
-- Your code will ALSO be re-run by the graders, who may load the same CSV with plain `pd.read_csv(path)` (pandas then infers types, so an all-numeric column such as "Mã số" becomes int64, and empty cells become `NaN`). Write code that gives the SAME answer under both loaders:
-  - Always insert `.astype(str)` before a string comparison or a `.str` accessor: `df[df["Mã số"].astype(str).str.strip() == "110"]`, `df[df.iloc[:, 0].astype(str).str.contains("Tiền", case=False, na=False)]`.
-  - NEVER compare a column to a string literal without `.astype(str)` — `df[df["Mã số"] == "110"]` matches nothing once that column is int64.
-  - `to_num(...)` already accepts numbers as well as strings, so it is safe under both loaders.
-- Available builtins ONLY: abs, round, len, min, max, sum, sorted, float, int, str, bool, list, dict, set, tuple, range, enumerate, zip, all, any, isinstance, print, plus the exception names Exception, ValueError, TypeError, KeyError, IndexError, AttributeError, ZeroDivisionError.
-- No other library, no file access, no network. The code must be fully self-contained: do not call any helper function that is not defined inside your own code.
-- Never use `str.format` / `format_map`; use f-strings or plain arithmetic instead (the runtime rejects `.format` calls).
-- Column labels are strings taken from the OCR header row (the first/label column is often literally an empty string `""`), NEVER sequential integers. `df.loc[mask, 1]` raises `KeyError: 1` because no column is named `1` — that is a `.loc` vs `.iloc` mixup. Use `.iloc[:, 1]` for positional column access, or `.loc[mask, "<exact header text>"]` for label access. Never pass a bare integer as a `.loc` column selector.
-- The DataFrame's row index is a plain 0-based `RangeIndex` — it is NEVER set to any label column. `df.index.str.contains(...)` always raises `AttributeError` (the index holds integers, not strings), and `df.loc["<Vietnamese label text>"]` always raises `KeyError` (that text is a cell VALUE inside a column, not an index key). To find a row by its Vietnamese label, filter a COLUMN's values: `df[df.iloc[:, 0].astype(str).str.contains("<label>", case=False, na=False)]` (or the named label column if you know its header), then index into the FILTERED result — never index the label text directly against `.loc`/`.index`.
-- Avoid deprecated pandas APIs (e.g. `DataFrame.applymap`); use `DataFrame.map` or `.apply` instead.
+- `pd` (pandas) is imported already. NEVER write an import statement.
+- Each table is already loaded into the variable shown in its `variable=` attribute (`df1`, `df2`, …). The dict `dfs` maps the same DataFrames by that name.
+- Cells are raw strings (`dtype=str`, no NA conversion, empty cell = `""`). Parse numbers explicitly before arithmetic.
+- The graders re-run your code and may load the CSV with plain `pd.read_csv(path)` (numeric columns become int64, empty cells `NaN`). Give the same answer under both loaders: always `.astype(str)` before a string comparison or `.str` accessor — `df[df["Mã số"].astype(str).str.strip() == "110"]`, `df[df.iloc[:, 0].astype(str).str.contains("Tiền", case=False, na=False)]`. Comparing an int64 column to `"110"` matches nothing. `to_num(...)` accepts numbers and strings, so it is safe either way.
+- Builtins available ONLY: abs, round, len, min, max, sum, sorted, float, int, str, bool, list, dict, set, tuple, range, enumerate, zip, all, any, isinstance, print + exception names Exception, ValueError, TypeError, KeyError, IndexError, AttributeError, ZeroDivisionError.
+- No other library, no file access, no network. Code must be self-contained: never call a helper you did not define.
+- Never use `str.format` / `format_map` (the runtime rejects them); use f-strings or plain arithmetic.
+- Column labels are OCR header strings (the label column is often `""`), NEVER integers: `df.loc[mask, 1]` raises `KeyError: 1`. Use `.iloc[:, 1]` positionally, or `.loc[mask, "<exact header text>"]` by label. Never pass a bare integer to `.loc`.
+- The row index is a plain 0-based `RangeIndex`, never a label column: `df.index.str.contains(...)` raises `AttributeError` and `df.loc["<nhãn tiếng Việt>"]` raises `KeyError`. Find a row by filtering a COLUMN's values, then index into the filtered result.
+- Avoid deprecated pandas APIs (`DataFrame.applymap` → `DataFrame.map`).
 </runtime_contract>
 
 <data_contract>
-- A function `to_num(s)` is ALREADY DEFINED in the runtime — do NOT redefine it, just call it. It parses a raw cell string into a float using the Vietnamese convention ("." is the thousands separator, "," is the decimal separator, "(1.234)" means negative 1234, "12,5%" means 12.5, and it also correctly handles the English-style OCR variant "1,234,567"), and returns `None` for anything that isn't a number (empty cells, row labels, note references).
-- `to_num` is a PLAIN FUNCTION, not a pandas method. Correct: `to_num(df1.iloc[3, 2])`, `[to_num(v) for v in df1.iloc[:, 2]]`, `df1.iloc[:, 2].map(to_num)`. Wrong: `series.to_num()`, `df1.to_num(...)`.
-- NEVER use `.astype(float)` / `pd.to_numeric(...)` on these cells — `"1.234.567"` raises `ValueError` there. `to_num` is the only correct converter.
-- Use `to_num(...)` for every cell you convert, and skip cells where it returns `None`.
-- Determine each table's unit from the metadata/context line shown above it (e.g. "Đơn vị: VND", "triệu đồng", "tỷ đồng"), then convert the final value to the unit the question asks for.
-- Balance-sheet tables usually have a "Số cuối năm" (end of year) column and a "Số đầu năm" (start of year) column. "cuối năm N" is the end-of-year column of report year N; "đầu năm N" equals end-of-year N-1.
-- OCR text may contain diacritic errors. Match row labels loosely (e.g. `.astype(str).str.contains(..., case=False, na=False)`) instead of requiring exact equality.
+- `to_num(s)` is ALREADY DEFINED — do not redefine it, just call it. It parses a cell into a float using the Vietnamese convention ("." thousands, "," decimal, "(1.234)" = −1234, "12,5%" = 12.5, and also the English OCR variant "1,234,567"), returning `None` for anything that is not a number.
+- `to_num` is a PLAIN FUNCTION, not a pandas method. Correct: `to_num(df1.iloc[3, 2])`, `[to_num(v) for v in df1.iloc[:, 2]]`, `df1.iloc[:, 2].map(to_num)`. Wrong: `series.to_num()`.
+- NEVER `.astype(float)` / `pd.to_numeric(...)` on these cells — `"1.234.567"` raises `ValueError`. `to_num` is the only correct converter; skip cells where it returns `None`.
+- A header cell may join several header tiers with " | " (`Số cuối năm | Giá trị`, `31/12/2018 | Triệu VND`): first part = period group, later parts narrow it (sub-column, unit).
+- Balance sheets have a "Số cuối năm" and a "Số đầu năm" column; "cuối năm N" is end-of-year of report N, "đầu năm N" = end-of-year N−1. "Năm nay"/"Năm trước" work the same way in income statements.
+- OCR has diacritic errors: match row labels loosely (`.str.contains(..., case=False, na=False)`), not by equality.
 </data_contract>
 
+<precomputed_hints>
+Two comment lines above each table are computed by the pipeline with deterministic rules (not by a model). TRUST and follow them — a wrong period column or a skipped unit conversion is the most common way to produce a number that runs but scores wrong.
+- `<!-- Cột theo kỳ: 1=kỳ 31/12/2018 (VND) 2=kỳ 01/01/2018 (VND) | CỘT ỨNG VỚI KỲ ĐƯỢC HỎI -> .iloc[:, 1] -->` — entries are `<positional index>=<period> (<unit>)`. Read the value from the column index after `CỘT ỨNG VỚI KỲ ĐƯỢC HỎI` — not the last column, not the biggest number in the row. If it says `chưa xác định được`, choose the column yourself by matching header text to the period in the question.
+- `<!-- Đổi đơn vị: … -> ÷ 1.000.000 (nhân với 1e-06) … -->` — multiply the value you read by exactly that factor before assigning `result`. `KHÔNG cần` / `KHÔNG đổi` means do not scale. `chưa suy được đơn vị` means read the unit from header/context yourself and convert to the unit in `- Đơn vị đáp án:`.
+- Each hint describes ONE table: when combining tables, apply each table's own column index and factor.
+</precomputed_hints>
+
 <semantic_rules>
-- A difference asked without an explicit direction is a non-negative magnitude; a difference with an explicit direction keeps its sign.
+- A difference asked without a direction is a non-negative magnitude; with an explicit direction it keeps its sign.
 - Growth in percent = (new - old) / abs(old) * 100.
-- Ratios asked in percent must be multiplied by 100; ratios asked as a coefficient ("hệ số", "lần") must not.
+- A percentage answer is returned ON THE PERCENT SCALE: for "… là bao nhiêu phần trăm?" with a ratio of 0.9, `result = 90.0` is correct and `0.9` is wrong. Ratios asked as a coefficient ("hệ số", "lần") are NOT multiplied by 100. Both operands of a ratio must be in the same unit — then no unit conversion is needed (the factors cancel).
 </semantic_rules>
 
 <reliability_rules>
-- Before `.iloc[0]` / `.iloc[-1]` / `.values[0]` on a filtered result, verify the filtered DataFrame is not empty (`len(filtered) > 0`) — a `.str.contains(...)` filter that matches zero rows usually means the row label isn't in THIS table (wrong table retrieved), not that you should guess a fallback index.
-- After calling `to_num(...)`, check the result is not `None` before using it in arithmetic (`None + x` / `None / x` raises `TypeError`). A `None` result means the wrong cell/row/table was picked — do not silently propagate it.
-- Do not round intermediate values. Round only the final value to 2 decimals.
-- Assign exactly ONE final numeric scalar to the variable `result` (a Python float or int, never a string, Series, or DataFrame).
-- If several provided tables are relevant, use them all; if only one is, use only that one.
-- If your row filter finds nothing in the table you tried first, LOOP OVER THE OTHER TABLES before giving up — the right table is often not `df1`. Pattern:
+- Check a filtered DataFrame is not empty (`len(filtered) > 0`) before `.iloc[0]` / `.iloc[-1]` / `.values[0]`. A filter matching zero rows means the label is not in THIS table (wrong table), not that you should guess an index.
+- Check `to_num(...)` is not `None` before arithmetic (`None / x` raises `TypeError`); `None` means the wrong cell/row/table was picked.
+- NEVER take "the last numeric value of the row" (`vals[-1]`, `row.iloc[-1]`, `max(vals)`): the last column is usually another period or a sub-column (provision, %, total), so the code runs but the answer is wrong. Address the column by the hinted index (or by header text you matched yourself).
+- Do NOT round, not even the final value: the answer is accepted only within 0.02% RELATIVE error, so rounding a small answer (a ratio, a coefficient) to 2 decimals can already fail. Keep full precision — `result = float(value * SCALE)`.
+- Assign exactly ONE final numeric scalar to `result` (float or int — never a string, Series, or DataFrame). Never assign `None`: it scores as a failure.
+- Use every provided table that is relevant; if only one is, use only that one.
+- Standard pattern — find the row by label, read the hinted column, apply the hinted factor, and loop over the other tables when the label is missing (the right table is often not `df1`):
 ```python
-found = []
+COL = 1            # chỉ số từ chú thích "CỘT ỨNG VỚI KỲ ĐƯỢC HỎI -> .iloc[:, K]"
+SCALE = 1e-06      # hệ số từ chú thích "Đổi đơn vị" (1.0 nếu chú thích nói KHÔNG cần đổi)
+value = None
 for _df in dfs.values():
-    hit = _df[_df.iloc[:, 0].astype(str).str.contains("<label>", case=False, na=False)]
-    if len(hit) > 0:
-        vals = [to_num(v) for v in hit.iloc[0].tolist()]
-        found = [v for v in vals if v is not None]
-        if found:
-            break
-result = float(found[-1]) if found else 0.0
+    hit = _df[_df.iloc[:, 0].astype(str).str.contains("<nhãn dòng>", case=False, na=False)]
+    if len(hit) == 0:
+        continue
+    row = hit.iloc[0]
+    if COL < len(row):
+        value = to_num(row.iloc[COL])
+    if value is None:  # ô đó rỗng -> lấy số ĐẦU TIÊN của dòng (không phải số cuối)
+        nums = [to_num(v) for v in row.tolist()]
+        nums = [v for v in nums if v is not None]
+        value = nums[0] if nums else None
+    if value is not None:
+        break
+result = float(value * SCALE) if value is not None else 0.0
 ```
-- Never assign `None` to `result`: it scores as a failure. If no table has the row, fall back to the closest numeric evidence you did find rather than giving up.
 </reliability_rules>
 
 <output_contract>
