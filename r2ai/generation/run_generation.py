@@ -71,7 +71,9 @@ def _free_gpu_memory() -> None:
         pass
 
 
-def load_retrieval_results(path: Path) -> list[RetrievalResult]:
+def load_retrieval_results(path: Path | str) -> list[RetrievalResult]:
+    """Đọc `retrieval_results.jsonl`. Nhận cả `str` — notebook Kaggle giữ đường dẫn dạng chuỗi."""
+    path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Không tìm thấy {path} — chạy bước retrieval ở local trước.")
     results: list[RetrievalResult] = []
@@ -83,7 +85,8 @@ def load_retrieval_results(path: Path) -> list[RetrievalResult]:
     return results
 
 
-def existing_ids(path: Path) -> set[int]:
+def existing_ids(path: Path | str) -> set[int]:
+    path = Path(path)
     if not path.exists():
         return set()
     ids: set[int] = set()

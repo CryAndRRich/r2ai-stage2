@@ -6,7 +6,13 @@ import json
 
 import pytest
 
-from r2ai.generation.run_generation import DEFAULT_STUB_QUERY, existing_ids, materialize_csvs, run
+from r2ai.generation.run_generation import (
+    DEFAULT_STUB_QUERY,
+    existing_ids,
+    load_retrieval_results,
+    materialize_csvs,
+    run,
+)
 from r2ai.schemas import RetrievalCandidate, RetrievalResult
 
 CSV_TEXT = "Chỉ tiêu,Số cuối năm\nTiền,1.234\nĐầu tư,2.000\nTổng,3.234\n"
@@ -44,6 +50,16 @@ def retrieval_file(tmp_path):
 
 def _rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_path_helpers_accept_plain_strings(retrieval_file, tmp_path):
+    """Notebook Kaggle giữ đường dẫn dạng `str` — gọi trực tiếp không được `AttributeError`.
+
+    Lỗi thật gặp trên Kaggle: cell smoke-test gọi `load_retrieval_results(RETRIEVAL_PATH)` với chuỗi
+    -> `'str' object has no attribute 'exists'` (chỉ `run()` mới tự bọc `Path`).
+    """
+    assert len(load_retrieval_results(str(retrieval_file))) == 2
+    assert existing_ids(str(tmp_path / "chua-ton-tai.jsonl")) == set()
 
 
 def test_dry_run_actually_executes_sandbox(retrieval_file, tmp_path):
